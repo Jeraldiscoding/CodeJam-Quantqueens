@@ -35,7 +35,10 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  environment: NodeJS.ProcessEnv = {},
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -45,6 +48,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...environment,
   });
   const service = new AgentService(
     config,
@@ -57,6 +61,23 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("seeds the graph demo Agent only when demo data is enabled", async () => {
+    const service = await makeService(new FakeRunner(), { SEED_DEMO_DATA: "true" });
+
+    expect(service.listAgents()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "d7b3a871-81e1-4965-9a88-bef875c3bb19",
+          name: "Release Guardian",
+        }),
+        expect.objectContaining({
+          id: "4d5661a8-49e5-4fe7-b430-cb8fd59e0633",
+          name: "Data Steward",
+        }),
+      ]),
+    );
+  });
+
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Builder" });

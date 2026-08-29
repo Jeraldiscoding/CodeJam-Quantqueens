@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import type { GraphConfigurationService } from "./graph-configuration.js";
+import type { KnowledgeGraphService } from "./knowledge-graph.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -22,10 +24,25 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const graphNodeBody = z.object({
+  type: z.enum(["human", "asset", "data_category"]),
+  label: z.string().trim().min(1).max(120),
+  riskLevel: z.enum(["low", "medium", "high", "critical"]),
+  riskWeight: z.number().int().min(0).max(100),
+  classification: z.enum(["public", "internal", "confidential", "restricted"]),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+const graphRelationshipBody = z.object({
+  sourceId: z.string().min(3).max(180),
+  targetId: z.string().min(3).max(180),
+  relation: z.enum(["OWNS", "CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE", "DEPLOYS_TO", "PROCESSES", "CONTAINS"]),
+});
 
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  graph?: KnowledgeGraphService,
+  graphConfiguration?: GraphConfigurationService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -84,6 +101,31 @@ export async function createApp(
     const { id } = agentIdParams.parse(request.params);
     return { agent: service.getAgent(id) };
   });
+
+  if (graph && graphConfiguration) {
+    app.get("/api/agents/:id/graph", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { graph: await graph.getAgentGraph(id) };
+    });
+
+    app.get("/api/agents/:id/blast-radius", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      return { blastRadius: await graph.calculateBlastRadius(id) };
+    });
+
+    app.post("/api/graph/nodes", async (request, reply) => {
+      const body = graphNodeBody.parse(request.body);
+      return reply.code(201).send({ node: await graphConfiguration.createNode(body) });
+    });
+
+    app.post("/api/agents/:id/graph/relationships", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      const body = graphRelationshipBody.parse(request.body);
+      return reply.code(201).send({
+        edge: await graphConfiguration.createRelationship(id, body),
+      });
+    });
+  }
 
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);

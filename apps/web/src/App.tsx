@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
+import { KnowledgeGraphPanel } from "./KnowledgeGraphPanel";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
 const starterPrompts = [
@@ -49,6 +50,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [workspaceView, setWorkspaceView] = useState<"graph" | "playground">("graph");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -396,11 +398,11 @@ export default function App() {
           <>
             <header className="agent-header">
               <div>
-                <div className="header-title-row">
-                  <h1>{selected.name}</h1>
-                  <StatusPill status={selected.status} />
-                </div>
-                <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
+              <div className="header-title-row">
+                <h1>{selected.name}</h1>
+                <StatusPill status={selected.status} />
+              </div>
+              <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
               </div>
               <div className="header-actions">
                 <button
@@ -477,7 +479,26 @@ export default function App() {
               </form>
             )}
 
-            <section className="playground">
+            <div className="workspace-tabs" role="tablist" aria-label="Agent workspace views">
+              <button
+                className={workspaceView === "graph" ? "active" : ""}
+                role="tab"
+                aria-selected={workspaceView === "graph"}
+                onClick={() => setWorkspaceView("graph")}
+              >
+                Impact map
+              </button>
+              <button
+                className={workspaceView === "playground" ? "active" : ""}
+                role="tab"
+                aria-selected={workspaceView === "playground"}
+                onClick={() => setWorkspaceView("playground")}
+              >
+                Playground
+              </button>
+            </div>
+
+            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : <section className="playground">
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">Playground</span>
@@ -581,7 +602,7 @@ export default function App() {
                   </button>
                 </div>
               </form>
-            </section>
+            </section>}
           </>
         ) : (
           <div className="no-agent">

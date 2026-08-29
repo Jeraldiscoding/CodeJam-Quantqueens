@@ -48,6 +48,8 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  graphNodes: GraphNode[];
+  graphEdges: GraphEdge[];
 }
 
 export interface CreateAgentInput {
@@ -80,3 +82,4 @@ export interface AgentRunner {
   cancel(agentId: string): Promise<boolean>;
   isAvailable(): Promise<boolean>;
 }
+import type { GraphEdge, GraphNode } from "./graph-types.js";

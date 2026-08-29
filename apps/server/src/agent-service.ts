@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { AgentGraphProvisioner } from "./agent-graph-provisioner.js";
+import { demoAgents } from "./demo-graph.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
@@ -24,6 +26,7 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly graphProvisioner?: AgentGraphProvisioner,
   ) {}
 
   async initialize(): Promise<void> {
@@ -44,6 +47,8 @@ export class AgentService {
         }
       }
     });
+    await this.seedDemoAgent();
+    await this.reconcileGraphNodes();
   }
 
   listAgents(): Agent[] {
@@ -77,6 +82,7 @@ export class AgentService {
     };
     await this.workspaces.create(agent);
     await this.store.mutate((database) => database.agents.push(agent));
+    await this.syncGraphNode(agent);
     return agent;
   }
 
@@ -101,6 +107,7 @@ export class AgentService {
       return structuredClone(agent);
     });
     await this.workspaces.writeInstructions(updated);
+    await this.syncGraphNode(updated);
     return updated;
   }
 
@@ -321,6 +328,72 @@ export class AgentService {
       }
     } finally {
       this.cancellationRequests.delete(agentId);
+    }
+  }
+
+  private async reconcileGraphNodes(): Promise<void> {
+    if (!this.graphProvisioner) return;
+    const agents = this.store.snapshot().agents;
+    for (const agent of agents) {
+      await this.syncGraphNode(agent);
+    }
+  }
+
+  private async seedDemoAgent(): Promise<void> {
+    if (!this.config.seedDemoData) return;
+    let seededNewAgent = false;
+    for (const demo of Object.values(demoAgents)) {
+      if (this.store.snapshot().agents.some((agent) => agent.id === demo.id)) continue;
+      const timestamp = now();
+      const demoAgent: Agent = {
+        id: demo.id,
+        name: demo.name,
+        description: demo.description,
+        instructions:
+          "Explain graph relationships clearly. Treat graph context as risk evidence, not permission to access anything beyond approved tools.",
+        status: "ready",
+        workspacePath: this.workspaces.workspacePath(demo.id),
+        codexThreadId: null,
+        lastError: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      try {
+        await this.workspaces.create(demoAgent);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        await this.workspaces.writeInstructions(demoAgent);
+      }
+      await this.store.mutate((database) => {
+        if (!database.agents.some((agent) => agent.id === demo.id)) {
+          database.agents.push(demoAgent);
+          seededNewAgent = true;
+        }
+      });
+    }
+    if (seededNewAgent) {
+      await this.store.mutate((database) => {
+        const releaseGuardian = database.agents.find(
+          (agent) => agent.id === demoAgents.releaseGuardian.id,
+        );
+        if (releaseGuardian) releaseGuardian.updatedAt = now();
+      });
+    }
+  }
+
+  private async syncGraphNode(agent: Agent): Promise<void> {
+    if (!this.graphProvisioner) return;
+    try {
+      await this.graphProvisioner.provisionAgent(agent);
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      await this.store.mutate((database) => {
+        const stored = database.agents.find((item) => item.id === agent.id);
+        if (stored) {
+          stored.lastError = `Knowledge Graph synchronization failed: ${detail}`;
+          stored.updatedAt = now();
+        }
+      });
     }
   }
 }

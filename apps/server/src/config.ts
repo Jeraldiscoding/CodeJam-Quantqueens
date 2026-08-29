@@ -45,6 +45,7 @@ const envSchema = z.object({
     .url()
     .default("https://ark.cn-beijing.volces.com/api/v3"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  SEED_DEMO_DATA: z.enum(["true", "false"]).optional(),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -88,6 +89,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
     nodeEnv: env.NODE_ENV,
+    seedDemoData:
+      env.SEED_DEMO_DATA === undefined
+        ? env.NODE_ENV === "development"
+        : env.SEED_DEMO_DATA === "true",
   };
 }
 

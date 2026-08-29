@@ -7,6 +7,8 @@ const emptyDatabase = (): Database => ({
   agents: [],
   messages: [],
   runs: [],
+  graphNodes: [],
+  graphEdges: [],
 });
 
 export class JsonStore {
@@ -23,7 +25,15 @@ export class JsonStore {
       if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
-      this.data = parsed;
+      // Version 1 originally predated the graph fields. Defaulting them keeps
+      // existing local launchpad data usable while the graph is introduced.
+      this.data = {
+        ...parsed,
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+        runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+        graphNodes: Array.isArray(parsed.graphNodes) ? parsed.graphNodes : [],
+        graphEdges: Array.isArray(parsed.graphEdges) ? parsed.graphEdges : [],
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

@@ -7,6 +7,38 @@ import { KnowledgeGraphService } from "./knowledge-graph.js";
 const agentId = "5b4d8100-97c8-4c7f-8c8c-4cf49d9fb5eb";
 
 describe("GraphConfigurationService", () => {
+  it("infers asset risk from classification and exposes the whole graph catalog", async () => {
+    const store = new InMemoryGraphStore([createUnconfiguredAgentNode(agentId, "Release Agent")]);
+    const configuration = new GraphConfigurationService(store);
+
+    const asset = await configuration.createNode({
+      type: "asset",
+      label: "Restricted ledger",
+      classification: "restricted",
+    });
+
+    expect(asset).toMatchObject({
+      riskLevel: "critical",
+      riskWeight: 10,
+      metadata: { riskSource: "classification-default" },
+    });
+    await configuration.createRelationship(agentId, {
+      sourceId: `agent:${agentId}`,
+      targetId: asset.id,
+      relation: "CAN_READ",
+    });
+    const duplicate = await configuration.createRelationship(agentId, {
+      sourceId: `agent:${agentId}`,
+      targetId: asset.id,
+      relation: "CAN_READ",
+    });
+
+    await expect(configuration.getCatalog()).resolves.toMatchObject({
+      nodes: [{ id: `agent:${agentId}` }, { id: asset.id }],
+      edges: [{ id: duplicate.id }],
+    });
+  });
+
   it("builds an explicit permission and impact path without inferring facts", async () => {
     const store = new InMemoryGraphStore([createUnconfiguredAgentNode(agentId, "Release Agent")]);
     const configuration = new GraphConfigurationService(store);

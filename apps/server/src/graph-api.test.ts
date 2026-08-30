@@ -96,6 +96,23 @@ describe("Graph configuration API", () => {
     await relate(production.id, customers.id, "PROCESSES");
     await relate(customers.id, pii.id, "CONTAINS");
 
+    const inferredAsset = await createNode({
+      type: "asset", label: "Internal dashboard", classification: "internal",
+    });
+    expect(inferredAsset).toMatchObject({ riskLevel: "low", riskWeight: 2 });
+
+    const wholeGraph = await app.inject({ method: "GET", url: "/api/graph" });
+    expect(wholeGraph.statusCode).toBe(200);
+    const catalog = wholeGraph.json<{
+      graph: { nodes: Array<{ id: string }>; edges: Array<{ relation: string }> };
+    }>().graph;
+    expect(catalog.nodes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: inferredAsset.id })]),
+    );
+    expect(catalog.edges).toEqual(
+      expect.arrayContaining([expect.objectContaining({ relation: "CAN_WRITE" })]),
+    );
+
     const blastRadius = await app.inject({
       method: "GET",
       url: `/api/agents/${agent.id}/blast-radius`,

@@ -63,6 +63,20 @@ const auditStatusByRelation: Partial<Record<GraphEdge["relation"], GraphEdge["st
 export class SqliteGraphStore implements GraphStore {
   constructor(private readonly database: MiddlewareDatabase) {}
 
+  async getAllNodes(): Promise<GraphNode[]> {
+    const rows = this.database.connection
+      .prepare("SELECT * FROM graph_nodes ORDER BY created_at, id")
+      .all() as GraphNodeRow[];
+    return rows.map(toGraphNode);
+  }
+
+  async getAllEdges(): Promise<GraphEdge[]> {
+    const rows = this.database.connection
+      .prepare("SELECT * FROM graph_edges ORDER BY created_at, id")
+      .all() as GraphEdgeRow[];
+    return rows.map(toGraphEdge);
+  }
+
   async getNode(id: string): Promise<GraphNode | null> {
     assertNonEmptyText(id, "Graph node ID");
     const row = this.getNodeRow(id);

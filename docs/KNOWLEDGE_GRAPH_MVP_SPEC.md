@@ -265,13 +265,14 @@ clock for expiry, and consumes an approved review only once.
   unwired until a trusted policy/gateway layer supplies Run ownership, policy
   provenance, live-Agent eligibility, authenticated approvers, request hashing,
   and audit emission.
-- The current Web Impact Map is seeded presentation data and does not call the
-  graph API; that frontend integration remains planned.
+- The Web Impact Map reads the selected Agent graph and Blast Radius from the
+  live API. The Network Graph view reads the whole shared topology.
 
 The current routes are ready and should retain their behaviour:
 
 | Route | Meaning |
 | --- | --- |
+| `GET /api/graph` | all stored nodes and relationships for the shared network view |
 | `GET /api/agents/:id/graph` | explainable Agent graph: owners, direct capabilities, reachable nodes, edges, and paths |
 | `GET /api/agents/:id/blast-radius` | score, threshold, decision, and scored targets |
 | `POST /api/graph/nodes` | create an explicit human, asset, or data-category fact |
@@ -286,13 +287,17 @@ node. The initial synchronisation creates identity only for normal Agents; a
 later configuration flow is responsible for adding ownership, capability, and
 asset-relationship edges.
 
-### Configuration flow
+### Configuration and inference flow
 
-The server exposes a deliberately explicit authoring flow:
+The server exposes a bounded, semi-inferred authoring flow:
 
-1. `POST /api/graph/nodes` creates a human, asset, or data-category node.
-2. `POST /api/agents/:id/graph/relationships` creates an approved relationship
-   for that Agent's connected subgraph.
+1. A user selects an existing asset or supplies a new asset name and
+   classification.
+2. New asset risk level and risk weight default from classification. Explicit
+   API callers may still override those defaults.
+3. The user confirms the Agent's direct `CAN_*` access.
+4. Traversal infers reachable assets, downstream paths, aggregate risk, and the
+   resulting review decision from the stored shared topology.
 
 Only `OWNS`, `CAN_*`, `DEPLOYS_TO`, `PROCESSES`, and `CONTAINS` are writable.
 Capabilities must run from the selected Agent directly to an asset. Downstream
@@ -300,9 +305,10 @@ relationships must start at an already reachable asset, so a user cannot join
 unrelated systems into an Agent's graph accidentally. `ATTEMPTED`, `TOUCHED`,
 and `DENIED` are reserved for future backend-generated audit evidence only.
 
-An LLM may propose this configuration as a draft, but cannot create or approve
-an edge. A human or trusted infrastructure integration must submit the final
-relationship fact.
+The Web UI implements this flow for direct Agent access and previews the
+inferred consequence before saving. An LLM may propose a configuration draft,
+but cannot create or approve an authority-bearing edge. A human or trusted
+infrastructure integration must submit that final relationship fact.
 
 ### Startup wiring
 
@@ -316,8 +322,11 @@ know which persistence implementation is in use.
 
 | Route | Result |
 | --- | --- |
+| `GET /api/graph` | complete node and edge catalog for the Network Graph |
 | `GET /api/agents/:id/graph` | nodes, edges, owner, capabilities, activity groups, and impact paths |
 | `GET /api/agents/:id/blast-radius` | score, threshold, decision, scored assets, and explainable paths |
+| `POST /api/graph/nodes` | create a node with optional classification-derived risk defaults |
+| `POST /api/agents/:id/graph/relationships` | persist an explicit direct capability or validated topology fact |
 
 ## Planned protected-action API
 

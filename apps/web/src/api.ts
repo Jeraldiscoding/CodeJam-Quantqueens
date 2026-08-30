@@ -1,5 +1,52 @@
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
+export interface GraphNode {
+  id: string;
+  type: "human" | "agent" | "asset" | "data_category" | "run";
+  label: string;
+  riskLevel: "low" | "medium" | "high" | "critical";
+  riskWeight: number;
+  classification: "public" | "internal" | "confidential" | "restricted";
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GraphEdge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  relation: string;
+  status: "authorized" | "attempted" | "actual" | "denied";
+  runId?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AgentGraph {
+  agent: GraphNode;
+  owners: GraphNode[];
+  capabilityEdges: GraphEdge[];
+  impactEdges: GraphEdge[];
+  activity: Record<"attempted" | "actual" | "denied", GraphEdge[]>;
+  reachableNodes: GraphNode[];
+  paths: Array<{ nodeIds: string[]; edgeIds: string[] }>;
+}
+
+export interface BlastRadius {
+  agentId: string;
+  score: number;
+  threshold: number;
+  decision: "ALLOW" | "REVIEW_REQUIRED";
+  targets: Array<{ node: GraphNode; path: { nodeIds: string[]; edgeIds: string[] } }>;
+  paths: Array<{ nodeIds: string[]; edgeIds: string[] }>;
+}
+
+export interface GraphCatalog {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -67,6 +114,27 @@ export const api = {
     }),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
+  wholeGraph: () => request<{ graph: GraphCatalog }>("/api/graph"),
+  graph: (id: string) => request<{ graph: AgentGraph }>("/api/agents/" + id + "/graph"),
+  blastRadius: (id: string) =>
+    request<{ blastRadius: BlastRadius }>("/api/agents/" + id + "/blast-radius"),
+  createGraphNode: (body: {
+    type: "human" | "asset" | "data_category";
+    label: string;
+    classification: GraphNode["classification"];
+  }) =>
+    request<{ node: GraphNode }>("/api/graph/nodes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  createGraphRelationship: (
+    agentId: string,
+    body: { sourceId: string; targetId: string; relation: string },
+  ) =>
+    request<{ edge: GraphEdge }>(`/api/agents/${agentId}/graph/relationships`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   sendMessage: (id: string, content: string) =>

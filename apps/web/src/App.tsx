@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { KnowledgeGraphPanel } from "./KnowledgeGraphPanel";
+import { OverallGraphPanel } from "./OverallGraphPanel";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
 
 const starterPrompts = [
@@ -50,7 +51,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const [workspaceView, setWorkspaceView] = useState<"graph" | "playground">("graph");
+  const [workspaceView, setWorkspaceView] = useState<"graph" | "overall" | "playground">("graph");
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -489,6 +490,14 @@ export default function App() {
                 Impact map
               </button>
               <button
+                className={workspaceView === "overall" ? "active" : ""}
+                role="tab"
+                aria-selected={workspaceView === "overall"}
+                onClick={() => setWorkspaceView("overall")}
+              >
+                Network graph
+              </button>
+              <button
                 className={workspaceView === "playground" ? "active" : ""}
                 role="tab"
                 aria-selected={workspaceView === "playground"}
@@ -498,7 +507,7 @@ export default function App() {
               </button>
             </div>
 
-            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : <section className="playground">
+            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : workspaceView === "overall" ? <OverallGraphPanel /> : <section className="playground">
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">Playground</span>

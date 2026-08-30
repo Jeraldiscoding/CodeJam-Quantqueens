@@ -20,6 +20,14 @@ export class InMemoryGraphStore implements GraphStore {
     edges.forEach((edge) => this.edges.set(edge.id, structuredClone(edge)));
   }
 
+  async getAllNodes(): Promise<GraphNode[]> {
+    return [...this.nodes.values()].sort(byCreation).map((node) => structuredClone(node));
+  }
+
+  async getAllEdges(): Promise<GraphEdge[]> {
+    return [...this.edges.values()].sort(byCreation).map((edge) => structuredClone(edge));
+  }
+
   async getNode(id: string): Promise<GraphNode | null> {
     const node = this.nodes.get(id);
     return node ? structuredClone(node) : null;

@@ -156,6 +156,9 @@ describe("SqliteGraphStore", () => {
     ];
     for (const fixture of edges) await store.createEdge(fixture);
 
+    await expect(store.getAllNodes()).resolves.toHaveLength(5);
+    await expect(store.getAllEdges()).resolves.toHaveLength(edges.length);
+
     await expect(store.getOutgoingEdges(agent.id)).resolves.toMatchObject([
       { id: "edge:a-can-read" },
       { id: "edge:z-can-write" },

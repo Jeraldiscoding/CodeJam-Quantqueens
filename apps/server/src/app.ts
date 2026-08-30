@@ -28,8 +28,8 @@ const messageBody = z.object({
 const graphNodeBody = z.object({
   type: z.enum(["human", "asset", "data_category"]),
   label: z.string().trim().min(1).max(120),
-  riskLevel: z.enum(["low", "medium", "high", "critical"]),
-  riskWeight: z.number().int().min(0).max(100),
+  riskLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
+  riskWeight: z.number().int().min(0).max(100).optional(),
   classification: z.enum(["public", "internal", "confidential", "restricted"]),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
@@ -104,6 +104,10 @@ export async function createApp(
   });
 
   if (graph && graphConfiguration) {
+    app.get("/api/graph", async () => ({
+      graph: await graphConfiguration.getCatalog(),
+    }));
+
     app.get("/api/agents/:id/graph", async (request) => {
       const { id } = agentIdParams.parse(request.params);
       service.getAgent(id);

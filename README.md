@@ -313,9 +313,14 @@ automatically imported. Existing Agent identities are reconciled during
 startup; the two demo topologies are reconciled only when their demo Agents
 exist (development seeds them by default, or set `SEED_DEMO_DATA=true`).
 
-The current Impact Map in the Web UI is seeded presentation data; it does not
-fetch these graph APIs yet. Connecting that panel to SQLite-backed API responses
-is a separate frontend integration task.
+The Impact Map in the Web UI loads the selected Agent's graph and Blast Radius
+from the SQLite-backed graph APIs. It redraws when the selected Agent changes,
+when that Agent's settings are saved, or when the user selects the refresh
+control. Its guided configuration asks for an existing or new asset, the
+classification of a new asset, and the Agent's direct access. Risk defaults are
+inferred from classification, while reachable assets, downstream paths, and
+Blast Radius are inferred from the shared topology. The Network Graph tab reads
+`GET /api/graph` and shows all stored nodes and relationships together.
 
 The current schema is deliberately split by responsibility:
 

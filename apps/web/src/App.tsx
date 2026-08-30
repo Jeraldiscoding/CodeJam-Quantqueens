@@ -223,6 +223,31 @@ export default function App() {
     }
   };
 
+  const resolveApproval = async (approve: boolean) => {
+    if (!selected || !activeRun?.policy?.approvalRequestId) return;
+    const approvalId = activeRun.policy.approvalRequestId;
+    setBusy(true);
+    setError(null);
+    try {
+      if (approve) {
+        await api.approveRequest(approvalId, "Approved from the Launchpad console");
+        const resumed = await api.resumeRun(activeRun.id);
+        setActiveRun(resumed.run);
+        await pollRun(resumed.run.id, selected.id);
+      } else {
+        await api.rejectRequest(approvalId, "Rejected from the Launchpad console");
+        const refreshed = await api.run(activeRun.id);
+        setActiveRun(refreshed.run);
+        await refreshAgents();
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await refreshAgents();
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected || !prompt.trim()) return;
@@ -562,6 +587,33 @@ export default function App() {
                     </div>
                   </article>
                 )}
+                {activeRun?.status === "awaiting_approval" && activeRun.policy && (
+                  <article className="run-approval">
+                    <strong>This run is paused for a human approval</strong>
+                    <span>
+                      Blast radius {activeRun.policy.riskScore} exceeds the review
+                      threshold of {activeRun.policy.reviewThreshold}. The Agent runtime
+                      has not been started.
+                    </span>
+                    <div className="run-approval-actions">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void resolveApproval(true)}
+                      >
+                        Approve and run
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => void resolveApproval(false)}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </article>
+                )}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
@@ -589,7 +641,8 @@ export default function App() {
                   disabled={
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
+                    activeRun != null &&
+                      ["queued", "running", "awaiting_approval"].includes(activeRun.status)
                   }
                   rows={3}
                 />
@@ -603,7 +656,8 @@ export default function App() {
                       !prompt.trim() ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                      (activeRun != null &&
+                        ["queued", "running", "awaiting_approval"].includes(activeRun.status))
                     }
                     aria-label="Send message"
                   >

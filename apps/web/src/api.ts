@@ -146,4 +146,16 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  approveRequest: (approvalId: string, reason: string) =>
+    request<{ approvalRequest: { id: string; status: string } }>(
+      `/api/policy/approvals/${approvalId}/approve`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  rejectRequest: (approvalId: string, reason: string) =>
+    request<{ approvalRequest: { id: string; status: string } }>(
+      `/api/policy/approvals/${approvalId}/reject`,
+      { method: "POST", body: JSON.stringify({ reason }) },
+    ),
+  resumeRun: (runId: string) =>
+    request<{ run: AgentRun }>(`/api/runs/${runId}/resume`, { method: "POST" }),
 };

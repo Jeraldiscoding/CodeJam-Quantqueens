@@ -4,6 +4,7 @@ import { demoAgents } from "./demo-graph.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import type { RunPolicyGate } from "./run-policy-gate.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -11,6 +12,7 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RunPolicySummary,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -27,6 +29,7 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly graphProvisioner?: AgentGraphProvisioner,
+    private readonly runPolicyGate?: RunPolicyGate,
   ) {}
 
   async initialize(): Promise<void> {
@@ -34,7 +37,11 @@ export class AgentService {
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
-        if (run.status === "queued" || run.status === "running") {
+        if (
+          run.status === "queued" ||
+          run.status === "running" ||
+          run.status === "awaiting_approval"
+        ) {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
@@ -173,6 +180,7 @@ export class AgentService {
       id: runId,
       agentId,
       status: "queued",
+      policy: null,
       prompt,
       output: null,
       error: null,
@@ -199,6 +207,15 @@ export class AgentService {
       }
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
+      }
+      const paused = database.runs.find(
+        (item) => item.agentId === agentId && item.status === "awaiting_approval",
+      );
+      if (paused) {
+        throw new HttpError(
+          409,
+          "This Agent has a run waiting on a human approval. Approve or reject it first.",
+        );
       }
       database.runs.push(run);
       database.messages.push(message);
@@ -239,7 +256,70 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  /**
+   * Resumes a Run that the policy gate paused. The approval is spent here, and
+   * spending it fails if the Agent graph changed after the human approved.
+   */
+  async resumeRun(runId: string): Promise<AgentRun> {
+    const run = this.getRun(runId);
+    if (run.status !== "awaiting_approval") {
+      throw new HttpError(409, `Run ${runId} is ${run.status} and is not awaiting approval`);
+    }
+    if (!this.runPolicyGate) {
+      throw new HttpError(503, "No policy gate is configured on this server");
+    }
+    const agent = this.getAgent(run.agentId);
+    if (agent.status === "stopped") {
+      throw new HttpError(409, "Start the Agent before resuming this run");
+    }
+    if (agent.status === "busy") {
+      throw new HttpError(409, "This Agent is already running");
+    }
+
+    await this.runPolicyGate.authorizeResume({
+      runId: run.id,
+      agentId: agent.id,
+      prompt: run.prompt,
+    });
+
+    const agentAtStart = await this.store.mutate((database) => {
+      const storedAgent = database.agents.find((item) => item.id === agent.id);
+      if (!storedAgent) throw new HttpError(404, "Agent not found");
+      const snapshot = structuredClone(storedAgent);
+      storedAgent.status = "busy";
+      storedAgent.lastError = null;
+      storedAgent.updatedAt = now();
+      return snapshot;
+    });
+
+    const execution = this.executeRun(agentAtStart, run, { skipPolicyGate: true });
+    this.activeExecutions.set(agent.id, execution);
+    void execution
+      .finally(() => {
+        if (this.activeExecutions.get(agent.id) === execution) {
+          this.activeExecutions.delete(agent.id);
+        }
+      })
+      .catch(() => undefined);
+    return this.getRun(runId);
+  }
+
+  /**
+   * Closes a paused Run after a human refused it. Called by the approval
+   * routes so a rejection actually ends the Run instead of leaving it hanging.
+   */
+  async rejectPendingRun(runId: string, reason: string): Promise<AgentRun | null> {
+    const run = this.store.snapshot().runs.find((item) => item.id === runId);
+    if (!run || run.status !== "awaiting_approval") return null;
+    await this.finishBlockedRun(run.agentId, runId, run.policy ?? null, reason);
+    return this.getRun(runId);
+  }
+
+  private async executeRun(
+    agentAtStart: Agent,
+    run: AgentRun,
+    options: { skipPolicyGate?: boolean } = {},
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -247,6 +327,12 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
+
+    if (!options.skipPolicyGate) {
+      const gated = await this.applyRunPolicy(agentAtStart, run);
+      if (!gated) return;
+    }
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -300,6 +386,93 @@ export class AgentService {
         }
       });
     }
+  }
+
+  /**
+   * Runs the pre-run policy check. Returns false when the Run must not reach
+   * the runner, having already recorded the outcome on the Run itself.
+   */
+  private async applyRunPolicy(agentAtStart: Agent, run: AgentRun): Promise<boolean> {
+    if (!this.runPolicyGate) return true;
+
+    let summary: RunPolicySummary;
+    try {
+      summary = await this.runPolicyGate.evaluateRun({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        prompt: run.prompt,
+      });
+    } catch (reason) {
+      // A policy layer that cannot reach a verdict must fail closed.
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      await this.finishBlockedRun(
+        agentAtStart.id,
+        run.id,
+        null,
+        `Policy evaluation failed, so this run was not started: ${detail}`,
+      );
+      return false;
+    }
+
+    if (summary.result === "ALLOW") {
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) storedRun.policy = summary;
+      });
+      return true;
+    }
+
+    if (summary.result === "DENY") {
+      await this.finishBlockedRun(
+        agentAtStart.id,
+        run.id,
+        summary,
+        `Policy denied this run (${summary.reasonCode}): blast radius ${summary.riskScore} exceeds the deny threshold of ${summary.denyThreshold}.`,
+      );
+      return false;
+    }
+
+    const completedAt = now();
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === run.id);
+      const agent = database.agents.find((item) => item.id === agentAtStart.id);
+      if (storedRun) {
+        storedRun.status = "awaiting_approval";
+        storedRun.policy = summary;
+        storedRun.error = null;
+      }
+      if (agent && agent.status !== "stopped") {
+        agent.status = "ready";
+        agent.lastError = null;
+        agent.updatedAt = completedAt;
+      }
+    });
+    return false;
+  }
+
+  private async finishBlockedRun(
+    agentId: string,
+    runId: string,
+    summary: RunPolicySummary | null,
+    message: string,
+  ): Promise<void> {
+    const completedAt = now();
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === runId);
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (storedRun) {
+        storedRun.status = "failed";
+        storedRun.error = message;
+        storedRun.policy = summary;
+        storedRun.completedAt = completedAt;
+      }
+      if (agent && agent.status !== "stopped") {
+        // A refusal is a correct outcome, not an Agent malfunction.
+        agent.status = "ready";
+        agent.lastError = message;
+        agent.updatedAt = completedAt;
+      }
+    });
   }
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {

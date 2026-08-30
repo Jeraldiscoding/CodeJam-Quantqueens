@@ -75,14 +75,18 @@ Implemented:
 - A seeded, presentation-only Impact Map and textual explanation.
 - SQLite graph persistence, migrations, policy-decision records, approval state,
   and one-time action claims.
+- A trusted `PolicyService` that scores every protected action against the
+  graph and records the verdict.
+- A Resource Gateway that is the only path from a Run to a protected read,
+  write, API call, or credential handle.
+- A pre-run policy gate that blocks or pauses a Run before `runner.run()`.
+- Run-correlated `ATTEMPTED`, `TOUCHED`, and `DENIED` evidence.
+- Human approval routes, request-hash binding, and one-time resumption.
 
 Planned integration:
 
-- Direct protected-action checks through a Resource Gateway.
-- Automatic Run-correlated attempted, successful, and denied evidence.
 - Safe LLM context derived from a Run's graph snapshot.
-- Authenticated human approval routes and resumption of an approved action.
-- API/SQLite-backed Impact Map data in the Web UI.
+- A dedicated reviewer console beyond the in-chat approval banner.
 
 Not included:
 
@@ -125,9 +129,9 @@ All edges have `id`, `sourceId`, `targetId`, `relation`, `status`, optional
 
 ## Rules
 
-### Planned Resource Gateway contract
+### Resource Gateway contract
 
-When the Resource Gateway is implemented, it must require a live, eligible
+The Resource Gateway requires a live, eligible
 platform Agent, a Run owned by that Agent, an authenticated actor, and this
 exact direct edge:
 
@@ -205,10 +209,9 @@ configuration, Agent lifecycle, and route shapes remain adapter-independent.
 runtime.
 
 `SqliteGovernanceStore` also implements durable policy decisions, approval
-transitions, and single-use execution claims. It is tested in isolation but is
-not yet constructed by server startup or exposed through routes. A trusted
-`PolicyService` and Resource Gateway must be added before this persistence
-foundation becomes operational approval middleware.
+transitions, and single-use execution claims. It is constructed at startup and
+driven by `PolicyService`, which is the only component permitted to decide
+whether a protected action may run.
 
 Useful existing code:
 
@@ -221,7 +224,11 @@ Useful existing code:
 | `apps/server/src/sqlite-graph-store.ts` | authoritative graph persistence adapter |
 | `apps/server/src/sqlite-governance-store.ts` | policy, approval, and claim persistence adapter |
 | `apps/server/src/json-graph-store.ts` | legacy local reference adapter |
-| `apps/server/src/app.ts` | server graph routes that the frontend/integration can consume |
+| `apps/server/src/policy-service.ts` | the only component that decides whether a protected action may run |
+| `apps/server/src/policy-hash.ts` | canonical request hashing and Agent graph revision digests |
+| `apps/server/src/resource-gateway.ts` | the single execution boundary and its swappable `ResourceAdapter` |
+| `apps/server/src/run-policy-gate.ts` | pre-run enforcement injected into `AgentService` |
+| `apps/server/src/app.ts` | server graph and policy routes that the frontend/integration can consume |
 
 ### SQLite database invariants
 
@@ -261,10 +268,9 @@ clock for expiry, and consumes an approved review only once.
 - Legacy non-demo JSON graph facts are not imported automatically.
 - Database and graph API tests use temporary file-backed SQLite databases,
   never the developer's real `APP_DATA_DIR/middleware.db`.
-- `SqliteGovernanceStore` is implemented and tested but remains intentionally
-  unwired until a trusted policy/gateway layer supplies Run ownership, policy
-  provenance, live-Agent eligibility, authenticated approvers, request hashing,
-  and audit emission.
+- `SqliteGovernanceStore` is wired through `PolicyService`, which supplies Run
+  ownership, policy provenance, live-Agent eligibility, server-derived approver
+  identity, request hashing, and audit emission.
 - The Web Impact Map reads the selected Agent graph and Blast Radius from the
   live API. The Network Graph view reads the whole shared topology.
 
@@ -328,13 +334,40 @@ know which persistence implementation is in use.
 | `POST /api/graph/nodes` | create a node with optional classification-derived risk defaults |
 | `POST /api/agents/:id/graph/relationships` | persist an explicit direct capability or validated topology fact |
 
-## Planned protected-action API
+## Protected-action API
 
-The Resource Gateway will need a protected-action route plus decision lookup,
-approval, and rejection routes. Those routes must derive actor identity and
-timestamps on the server, verify the Agent is still live and eligible, verify
-Run ownership, and correlate decisions with `ATTEMPTED`, `TOUCHED`, and
-`DENIED` graph evidence.
+These routes derive actor identity and timestamps on the server, verify the
+Agent is live and eligible, verify Run ownership, and correlate every decision
+with `ATTEMPTED`, `TOUCHED`, and `DENIED` graph evidence.
+
+| Route | Result |
+| --- | --- |
+| `POST /api/runs/:id/actions` | evaluate and, when allowed, execute one protected action |
+| `POST /api/runs/:id/actions/resume` | execute an approved action exactly once |
+| `POST /api/runs/:id/resume` | resume a Run the pre-run gate paused |
+| `GET /api/runs/:id/policy` | every decision recorded for that Run |
+| `GET /api/policy/decisions/:id` | one decision with its approval state and events |
+| `GET /api/policy/approvals?status=pending` | the human review queue |
+| `POST /api/policy/approvals/:id/approve` | approve a pending review |
+| `POST /api/policy/approvals/:id/reject` | reject a pending review |
+
+### Decision rule
+
+A protected action is scored on the assets reachable *through that one
+capability edge*, not the Agent's whole surface. Missing the exact authorized
+`agent --CAN_*--> asset` edge is an immediate `DENY`, whatever the score.
+Otherwise the score is compared with two thresholds: above the deny threshold
+returns `DENY`, above the review threshold returns `REVIEW_REQUIRED`, and
+anything else returns `ALLOW`.
+
+### Approval binding
+
+Each decision stores a SHA-256 request hash over the policy version, Run ID,
+Agent node, capability, target, request payload, and a digest of the Agent's
+authorized subgraph. Execution recomputes that hash from the live graph. An
+approval therefore cannot be spent on a different Run, a different payload, or
+after a permission or risk weight has changed. Claims are single use, so an
+approved action executes exactly once.
 
 ## Minimum acceptance tests
 
@@ -346,7 +379,14 @@ Run ownership, and correlate decisions with `ATTEMPTED`, `TOUCHED`, and
 - SQLite migrations, foreign keys, approval expiry, operation idempotency, and
   one-time claims are covered by temporary file-backed tests.
 
-Future Resource Gateway acceptance must additionally prove that a missing exact
-capability is denied, high-risk execution pauses for approval, rejection and
-expiry prevent execution, and attempt/outcome evidence shares the correct Run
-and policy decision correlation.
+Enforcement acceptance, covered by `policy-service.test.ts` and
+`policy-api.test.ts`:
+
+- A missing exact capability is denied even when the asset is reachable.
+- A high blast radius pauses the Run before `runner.run()` is called.
+- Rejection, expiry, a changed payload, and a changed graph revision all
+  prevent execution.
+- An approved action executes exactly once; a replay is refused.
+- `ATTEMPTED`, `TOUCHED`, and `DENIED` evidence carries the correct Run and
+  decision correlation, and never alters the Blast Radius score.
+- `CAN_USE` returns a scoped, expiring handle rather than a credential value.

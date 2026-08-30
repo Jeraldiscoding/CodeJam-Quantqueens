@@ -1,5 +1,11 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
 export type MessageRole = "user" | "assistant";
 
 export interface Agent {
@@ -30,10 +36,23 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+/** What the pre-run policy gate decided, stored alongside the Run itself. */
+export interface RunPolicySummary {
+  result: "ALLOW" | "DENY" | "REVIEW_REQUIRED";
+  reasonCode: string;
+  riskScore: number;
+  reviewThreshold: number;
+  denyThreshold: number;
+  decisionId: string | null;
+  approvalRequestId: string | null;
+  evaluatedAt: string;
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
   status: RunStatus;
+  policy?: RunPolicySummary | null;
   prompt: string;
   output: string | null;
   error: string | null;

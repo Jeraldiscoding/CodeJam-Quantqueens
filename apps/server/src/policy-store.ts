@@ -93,6 +93,7 @@ export interface GovernanceStore {
   getDecisionsForRun(runId: string): Promise<PolicyDecisionRecord[]>;
   getApprovalRequest(id: string): Promise<ApprovalRequestRecord | null>;
   getApprovalForDecision(decisionId: string): Promise<ApprovalRequestRecord | null>;
+  listApprovals(status?: ApprovalStatus): Promise<ApprovalRequestRecord[]>;
   getApprovalEvents(approvalRequestId: string): Promise<ApprovalEventRecord[]>;
   resolveReview(input: ResolveReviewInput): Promise<ApprovalEventRecord>;
   claimForExecution(input: ClaimPolicyActionInput): Promise<PolicyActionClaim>;

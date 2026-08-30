@@ -10,6 +10,8 @@ import type { AgentService } from "./agent-service.js";
 import type { GraphConfigurationService } from "./graph-configuration.js";
 import type { KnowledgeGraphService } from "./knowledge-graph.js";
 import { MiddlewareStoreError } from "./middleware-validation.js";
+import type { PolicyService } from "./policy-service.js";
+import type { ResourceGateway } from "./resource-gateway.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -33,6 +35,28 @@ const graphNodeBody = z.object({
   classification: z.enum(["public", "internal", "confidential", "restricted"]),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
+const decisionIdParams = z.object({ id: z.string().min(3).max(180) });
+const approvalIdParams = z.object({ id: z.string().min(3).max(180) });
+const protectedActionBody = z.object({
+  operationId: z.string().trim().min(8).max(120).regex(/^[A-Za-z0-9:_.-]+$/),
+  capability: z.enum(["CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE"]),
+  targetNodeId: z.string().min(3).max(180),
+  payload: z.record(z.string(), z.unknown()).optional(),
+});
+const resumeActionBody = z.object({
+  decisionId: z.string().min(3).max(180),
+  payload: z.record(z.string(), z.unknown()).optional(),
+});
+const approvalDecisionBody = z.object({
+  reason: z.string().trim().max(500).optional(),
+  actorHumanNodeId: z.string().min(3).max(180).optional(),
+});
+const approvalQuery = z.object({
+  status: z
+    .enum(["pending", "approved", "rejected", "expired", "consumed"])
+    .optional(),
+});
+
 const graphRelationshipBody = z.object({
   sourceId: z.string().min(3).max(180),
   targetId: z.string().min(3).max(180),
@@ -44,6 +68,8 @@ export async function createApp(
   service: AgentService,
   graph?: KnowledgeGraphService,
   graphConfiguration?: GraphConfigurationService,
+  policy?: PolicyService,
+  gateway?: ResourceGateway,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -132,6 +158,99 @@ export async function createApp(
       return reply.code(201).send({
         edge: await graphConfiguration.createRelationship(id, body),
       });
+    });
+  }
+
+  if (policy && gateway) {
+    /**
+     * Actor identity is derived on the server from the authenticated request,
+     * never from the body. A caller cannot claim to be someone else.
+     */
+    const actorPrincipalId = (authenticated: boolean) =>
+      authenticated ? "principal:operator" : "principal:local-dev";
+    const principalFor = (request: { headers: Record<string, unknown> }) =>
+      actorPrincipalId(config.authToken.length > 0 && Boolean(request.headers.authorization));
+
+    app.post("/api/runs/:id/actions", async (request, reply) => {
+      const { id } = runIdParams.parse(request.params);
+      const body = protectedActionBody.parse(request.body);
+      const outcome = await gateway.request({
+        runId: id,
+        operationId: body.operationId,
+        capability: body.capability,
+        targetNodeId: body.targetNodeId,
+        payload: body.payload,
+        actorPrincipalId: principalFor(request),
+      });
+      const statusCode =
+        outcome.status === "executed" ? 200 : outcome.status === "denied" ? 403 : 202;
+      return reply.code(statusCode).send(outcome);
+    });
+
+    app.post("/api/runs/:id/actions/resume", async (request, reply) => {
+      const { id } = runIdParams.parse(request.params);
+      const body = resumeActionBody.parse(request.body);
+      const outcome = await gateway.resume({
+        runId: id,
+        decisionId: body.decisionId,
+        payload: body.payload,
+        actorPrincipalId: principalFor(request),
+      });
+      return reply.code(outcome.status === "executed" ? 200 : 403).send(outcome);
+    });
+
+    app.post("/api/runs/:id/resume", async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      return { run: await service.resumeRun(id) };
+    });
+
+    app.get("/api/runs/:id/policy", async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      service.getRun(id);
+      return { decisions: await policy.getDecisionsForRun(id) };
+    });
+
+    app.get("/api/policy/decisions/:id", async (request) => {
+      const { id } = decisionIdParams.parse(request.params);
+      return policy.getDecision(id);
+    });
+
+    app.get("/api/policy/approvals", async (request) => {
+      const { status } = approvalQuery.parse(request.query);
+      return { approvals: await policy.listApprovals(status ?? "pending") };
+    });
+
+    app.post("/api/policy/approvals/:id/approve", async (request) => {
+      const { id } = approvalIdParams.parse(request.params);
+      const body = approvalDecisionBody.parse(request.body ?? {});
+      return policy.resolveApproval({
+        approvalRequestId: id,
+        resolution: "approved",
+        actorPrincipalId: principalFor(request),
+        actorHumanNodeId: body.actorHumanNodeId,
+        reason: body.reason,
+      });
+    });
+
+    app.post("/api/policy/approvals/:id/reject", async (request) => {
+      const { id } = approvalIdParams.parse(request.params);
+      const body = approvalDecisionBody.parse(request.body ?? {});
+      const resolved = await policy.resolveApproval({
+        approvalRequestId: id,
+        resolution: "rejected",
+        actorPrincipalId: principalFor(request),
+        actorHumanNodeId: body.actorHumanNodeId,
+        reason: body.reason,
+      });
+      // A refused pre-run review must end the Run, not leave it paused forever.
+      const decision = await policy.getDecision(resolved.approvalRequest.decisionId);
+      if (decision.decision.operationId.startsWith("run-gate:")) {
+        await service.rejectPendingRun(
+          decision.decision.runId,
+          `A reviewer rejected this run: ${body.reason ?? "no reason given"}`,
+        );
+      }
+      return resolved;
     });
   }
 

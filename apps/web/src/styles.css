@@ -1371,6 +1371,43 @@ textarea:focus {
   font-size: 11px;
 }
 
+.run-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border-left: 2px solid var(--amber, #c98a2e);
+  background: #fdf6e8;
+  padding: 10px 12px;
+  color: #7a5716;
+  font-size: 11px;
+}
+
+.run-approval-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.run-approval-actions button {
+  border: 1px solid #c98a2e;
+  border-radius: 3px;
+  background: #c98a2e;
+  padding: 5px 10px;
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-approval-actions button.ghost {
+  background: transparent;
+  color: #7a5716;
+}
+
+.run-approval-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .composer {
   margin: 0;
   border-top: 1px solid #e1dfd8;

@@ -32,8 +32,8 @@ is an explainable decision, not an opaque score and not a static JSON ACL.
 
 The demo should communicate this in one sentence:
 
-> “We use direct permissions to enforce what an Agent may do, and the graph to
-> reveal and explain what that action can affect.”
+> “Direct permissions define what the future gateway may enforce, and the graph
+> reveals and explains what that action can affect.”
 
 ## Demo graph
 
@@ -65,17 +65,24 @@ The graph answers: "What could this Agent's permitted configuration change
 affect?" The returned path reaches a production service and restricted
 customer data containing PII.
 
-## Scope
+## Scope and implementation status
 
-Included:
+Implemented:
 
 - Explicit node and edge storage.
-- Direct permission checks.
 - Bounded, deterministic impact-path traversal.
 - Blast Radius: unique reachable risk-bearing asset weights are summed once.
-- Run-correlated attempted, successful, and denied evidence.
-- A judge-facing graph visualization and textual explanation.
+- A seeded, presentation-only Impact Map and textual explanation.
+- SQLite graph persistence, migrations, policy-decision records, approval state,
+  and one-time action claims.
+
+Planned integration:
+
+- Direct protected-action checks through a Resource Gateway.
+- Automatic Run-correlated attempted, successful, and denied evidence.
 - Safe LLM context derived from a Run's graph snapshot.
+- Authenticated human approval routes and resumption of an approved action.
+- API/SQLite-backed Impact Map data in the Web UI.
 
 Not included:
 
@@ -118,9 +125,11 @@ All edges have `id`, `sourceId`, `targetId`, `relation`, `status`, optional
 
 ## Rules
 
-### Authorization
+### Planned Resource Gateway contract
 
-For an operation, the Resource Gateway only permits an exact direct edge:
+When the Resource Gateway is implemented, it must require a live, eligible
+platform Agent, a Run owned by that Agent, an authenticated actor, and this
+exact direct edge:
 
 ```text
 agent:{id} --CAN_WRITE/authorized--> target asset
@@ -149,12 +158,12 @@ zero, avoiding double-counting customer data and its PII label.
 The current threshold is 20. A score above it returns `REVIEW_REQUIRED`;
 otherwise it returns `ALLOW`.
 
-### Run and LLM context
+### Planned Run and LLM context integration
 
-The full user prompt remains in the existing Message store. A Run graph node
-holds only an initiating message ID and a safe graph-context snapshot. The
-server may send that short context to the LLM with the prompt, but policy
-enforcement remains in backend code.
+The full user prompt remains in the existing Message store. The reserved Run
+graph node may hold only an initiating message ID and a safe graph-context
+snapshot. A future server integration may send that short context to the LLM
+with the prompt, but policy enforcement must remain in backend code.
 
 ## GraphStore contract for persistence
 
@@ -187,40 +196,49 @@ credential-secret keys.
 must be idempotent: synchronizing an existing Agent refreshes the same node and
 relationships rather than duplicating them.
 
-## Jerome handoff: SQLite persistence
+## SQLite persistence foundation
 
-This is the only document Jerome needs for the current graph work.
+`SqliteGraphStore` is the application `GraphStore` for the POC. It persists
+graph nodes and edges in `APP_DATA_DIR/middleware.db`; graph services,
+configuration, Agent lifecycle, and route shapes remain adapter-independent.
+`JsonGraphStore` remains a legacy reference and is not authoritative at
+runtime.
 
-The application already has a local `JsonGraphStore` so the graph,
-configuration API, and demos run today. Jerome’s task is to implement a
-`SqliteGraphStore` with the exact `GraphStore` contract above, then replace
-only the construction in `apps/server/src/index.ts`. Do **not** rewrite
-`KnowledgeGraphService`, `GraphConfigurationService`, `AgentService`, the
-route shapes, or the graph UI to make this change.
+`SqliteGovernanceStore` also implements durable policy decisions, approval
+transitions, and single-use execution claims. It is tested in isolation but is
+not yet constructed by server startup or exposed through routes. A trusted
+`PolicyService` and Resource Gateway must be added before this persistence
+foundation becomes operational approval middleware.
 
 Useful existing code:
 
-| File | Responsibility Jerome should preserve |
+| File | Responsibility to preserve |
 | --- | --- |
 | `apps/server/src/graph-types.ts` | canonical node, edge, filter, and `GraphStore` types |
 | `apps/server/src/knowledge-graph.ts` | deterministic traversal and Blast Radius calculation |
 | `apps/server/src/graph-configuration.ts` | validates explicit relationship authoring |
 | `apps/server/src/agent-graph-provisioner.ts` | creates an Agent graph identity and demo facts |
-| `apps/server/src/json-graph-store.ts` | replaceable local reference adapter |
+| `apps/server/src/sqlite-graph-store.ts` | authoritative graph persistence adapter |
+| `apps/server/src/sqlite-governance-store.ts` | policy, approval, and claim persistence adapter |
+| `apps/server/src/json-graph-store.ts` | legacy local reference adapter |
 | `apps/server/src/app.ts` | server graph routes that the frontend/integration can consume |
 
-### Required SQLite database
+### SQLite database invariants
 
-Create `middleware.db` under `APP_DATA_DIR`. Use a SQLite driver compatible
-with Node 22, enable foreign keys and WAL mode, and add idempotent migrations.
-Implement `graph_nodes` and `graph_edges` using the fields in the data model.
+The application creates `middleware.db` under `APP_DATA_DIR` using the pinned
+Node 22-compatible `better-sqlite3` runtime dependency. It enables foreign keys,
+WAL mode, a busy timeout, and idempotent numbered migrations. Applied migrations
+are immutable and checksum-verified; schema changes require a new higher-numbered
+migration.
+
+`graph_nodes` and `graph_edges` use the fields in the data model.
 `graph_edges.source_id` and `graph_edges.target_id` must reference
 `graph_nodes.id`; add indexes on `(source_id, status, created_at)`,
 `(target_id, status, created_at)`, and `(run_id, created_at)`. Store metadata
 as JSON text and preserve ISO timestamps. Query results must always be ordered
 by `created_at`, then `id`.
 
-The database must enforce or the adapter must validate:
+The database enforces or the adapter validates:
 
 - known node types, edge relations, statuses, classifications, and risk levels;
 - risk weights from 0 through 100;
@@ -228,19 +246,27 @@ The database must enforce or the adapter must validate:
 - both edge endpoints exist;
 - the allowed relation/source/target combinations in the configuration flow.
 
-### Integration steps
+The governance migration also creates `policy_decisions`, `approval_requests`,
+`approval_events`, and `policy_action_claims`. The governance adapter binds a
+claim to the same operation ID and SHA-256 request hash, uses a server-side
+clock for expiry, and consumes an approved review only once.
 
-1. Add `SqliteGraphStore` implementing every `GraphStore` method.
-2. Initialize `middleware.db` in `index.ts` before `AgentService.initialize()`.
-3. In `index.ts`, construct `SqliteGraphStore` instead of `JsonGraphStore`.
-4. Keep injecting `DemoAgentGraphProvisioner(graphStore)` into `AgentService`.
-   Startup reconciliation safely creates missing Agent graph nodes and demo
-   facts.
-5. If existing local JSON graph facts need preserving, make a one-time import
-   from `launchpad.json`; otherwise startup reconciliation recreates Agent
-   identities and the two demo topologies.
-6. Run the existing graph unit/API tests against a temporary SQLite database,
-   never the real `APP_DATA_DIR/middleware.db`.
+### Verified wiring and boundaries
+
+- `middleware.db` initializes before `AgentService.initialize()`.
+- Startup constructs `SqliteGraphStore` and injects it into graph services and
+  `DemoAgentGraphProvisioner`.
+- Existing Agents are reconciled into SQLite; demo topology is added only when
+  the corresponding demo Agents exist.
+- Legacy non-demo JSON graph facts are not imported automatically.
+- Database and graph API tests use temporary file-backed SQLite databases,
+  never the developer's real `APP_DATA_DIR/middleware.db`.
+- `SqliteGovernanceStore` is implemented and tested but remains intentionally
+  unwired until a trusted policy/gateway layer supplies Run ownership, policy
+  provenance, live-Agent eligibility, authenticated approvers, request hashing,
+  and audit emission.
+- The current Web Impact Map is seeded presentation data and does not call the
+  graph API; that frontend integration remains planned.
 
 The current routes are ready and should retain their behaviour:
 
@@ -272,7 +298,7 @@ Only `OWNS`, `CAN_*`, `DEPLOYS_TO`, `PROCESSES`, and `CONTAINS` are writable.
 Capabilities must run from the selected Agent directly to an asset. Downstream
 relationships must start at an already reachable asset, so a user cannot join
 unrelated systems into an Agent's graph accidentally. `ATTEMPTED`, `TOUCHED`,
-and `DENIED` are backend-generated audit evidence only.
+and `DENIED` are reserved for future backend-generated audit evidence only.
 
 An LLM may propose this configuration as a draft, but cannot create or approve
 an edge. A human or trusted infrastructure integration must submit the final
@@ -286,18 +312,32 @@ After initializing the persistent `GraphStore`, construct
 created and reconciles all existing Agents during startup. No endpoint needs to
 know which persistence implementation is in use.
 
-## API target
+## Implemented API
 
 | Route | Result |
 | --- | --- |
 | `GET /api/agents/:id/graph` | nodes, edges, owner, capabilities, activity groups, and impact paths |
 | `GET /api/agents/:id/blast-radius` | score, threshold, decision, scored assets, and explainable paths |
-| protected mock action route | exact permission decision plus Run audit edges |
+
+## Planned protected-action API
+
+The Resource Gateway will need a protected-action route plus decision lookup,
+approval, and rejection routes. Those routes must derive actor identity and
+timestamps on the server, verify the Agent is still live and eligible, verify
+Run ownership, and correlate decisions with `ATTEMPTED`, `TOUCHED`, and
+`DENIED` graph evidence.
 
 ## Minimum acceptance tests
 
 - The demo graph produces the Agent → config → service → dataset → PII path.
 - The calculated score is 21 for the seeded risk weights 4, 7, and 10.
-- A missing direct `CAN_WRITE` edge is denied.
 - Audit edges do not grant authority or alter the score.
 - A cycle does not loop or double-count an asset.
+- Multiple direct capabilities to the same asset do not double-count it.
+- SQLite migrations, foreign keys, approval expiry, operation idempotency, and
+  one-time claims are covered by temporary file-backed tests.
+
+Future Resource Gateway acceptance must additionally prove that a missing exact
+capability is denied, high-risk execution pauses for approval, rejection and
+expiry prevent execution, and attempt/outcome evidence shares the correct Run
+and policy decision correlation.

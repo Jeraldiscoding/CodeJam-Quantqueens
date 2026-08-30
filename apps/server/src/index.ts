@@ -4,9 +4,10 @@ import { DemoAgentGraphProvisioner } from "./agent-graph-provisioner.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { GraphConfigurationService } from "./graph-configuration.js";
-import { JsonGraphStore } from "./json-graph-store.js";
 import { KnowledgeGraphService } from "./knowledge-graph.js";
+import { MiddlewareDatabase } from "./middleware-database.js";
 import { createRunner } from "./runner-factory.js";
+import { SqliteGraphStore } from "./sqlite-graph-store.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -14,7 +15,11 @@ const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
-const graphStore = new JsonGraphStore(store);
+const middlewareDatabase = new MiddlewareDatabase(
+  path.join(config.dataDirectory, "middleware.db"),
+);
+await middlewareDatabase.initialize();
+const graphStore = new SqliteGraphStore(middlewareDatabase);
 const graph = new KnowledgeGraphService(graphStore);
 const graphConfiguration = new GraphConfigurationService(graphStore);
 const workspaces = new WorkspaceManager(config.workspaceRoot);
@@ -29,6 +34,7 @@ const service = new AgentService(
 await service.initialize();
 
 const app = await createApp(config, service, graph, graphConfiguration);
+app.addHook("onClose", () => middlewareDatabase.close());
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");

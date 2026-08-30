@@ -177,7 +177,7 @@ export class KnowledgeGraphService {
     for (const edge of capabilityEdges) {
       this.registerEdge(edge, visitedEdgeIds);
       const target = await this.store.getNode(edge.targetId);
-      if (!target) continue;
+      if (!target || visitedNodeIds.has(target.id)) continue;
       this.registerNode(target, visitedNodeIds);
       reachableNodes.push(target);
       pathsByNodeId.set(target.id, { nodeIds: [agent.id, target.id], edgeIds: [edge.id] });

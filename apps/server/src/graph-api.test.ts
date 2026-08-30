@@ -7,9 +7,10 @@ import { DemoAgentGraphProvisioner } from "./agent-graph-provisioner.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { GraphConfigurationService } from "./graph-configuration.js";
-import { JsonGraphStore } from "./json-graph-store.js";
 import { KnowledgeGraphService } from "./knowledge-graph.js";
+import { MiddlewareDatabase } from "./middleware-database.js";
 import { createRunner } from "./runner-factory.js";
+import { SqliteGraphStore } from "./sqlite-graph-store.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -33,7 +34,11 @@ describe("Graph configuration API", () => {
       CODEX_HOME: path.join(root, "codex"),
     });
     const store = new JsonStore(path.join(root, "data", "launchpad.json"));
-    const graphStore = new JsonGraphStore(store);
+    const middlewareDatabase = new MiddlewareDatabase(
+      path.join(root, "data", "middleware.db"),
+    );
+    await middlewareDatabase.initialize();
+    const graphStore = new SqliteGraphStore(middlewareDatabase);
     const service = new AgentService(
       config,
       store,
@@ -48,6 +53,7 @@ describe("Graph configuration API", () => {
       new KnowledgeGraphService(graphStore),
       new GraphConfigurationService(graphStore),
     );
+    app.addHook("onClose", () => middlewareDatabase.close());
     const agent = await service.createAgent({ name: "Release Agent" });
 
     const createNode = async (body: Record<string, unknown>) => {
@@ -98,6 +104,31 @@ describe("Graph configuration API", () => {
     expect(blastRadius.json()).toMatchObject({
       blastRadius: { score: 21, decision: "REVIEW_REQUIRED" },
     });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/agents/${agent.id}`,
+    });
+    expect(deleted.statusCode).toBe(200);
+    for (const suffix of ["graph", "blast-radius"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/agents/${agent.id}/${suffix}`,
+      });
+      expect(response.statusCode).toBe(404);
+    }
+    const relationshipAfterDeletion = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/graph/relationships`,
+      payload: {
+        sourceId: `agent:${agent.id}`,
+        targetId: deploymentConfig.id,
+        relation: "CAN_READ",
+      },
+    });
+    expect(relationshipAfterDeletion.statusCode).toBe(404);
+    await expect(graphStore.getNode(`agent:${agent.id}`)).resolves.not.toBeNull();
+
     await app.close();
   });
 });

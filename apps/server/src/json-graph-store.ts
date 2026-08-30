@@ -15,6 +15,14 @@ const matches = (edge: GraphEdge, filter?: EdgeFilter) =>
 export class JsonGraphStore implements GraphStore {
   constructor(private readonly store: JsonStore) {}
 
+  async getAllNodes(): Promise<GraphNode[]> {
+    return this.store.snapshot().graphNodes.sort(byCreation);
+  }
+
+  async getAllEdges(): Promise<GraphEdge[]> {
+    return this.store.snapshot().graphEdges.sort(byCreation);
+  }
+
   async getNode(id: string): Promise<GraphNode | null> {
     return this.store.snapshot().graphNodes.find((node) => node.id === id) ?? null;
   }

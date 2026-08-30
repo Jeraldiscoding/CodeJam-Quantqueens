@@ -13,8 +13,8 @@ const editableRelations = new Set<GraphEdgeRelation>([
 export interface CreateGraphNodeInput {
   type: "human" | "asset" | "data_category";
   label: string;
-  riskLevel: GraphNode["riskLevel"];
-  riskWeight: number;
+  riskLevel?: GraphNode["riskLevel"] | undefined;
+  riskWeight?: number | undefined;
   classification: GraphNode["classification"];
   metadata?: Record<string, unknown> | undefined;
 }
@@ -33,6 +33,24 @@ const slug = (value: string) =>
     .replace(/(^-|-$)/g, "")
     .slice(0, 48) || "node";
 
+const inferredRiskByClassification: Record<
+  GraphNode["classification"],
+  { riskLevel: GraphNode["riskLevel"]; riskWeight: number }
+> = {
+  public: { riskLevel: "low", riskWeight: 0 },
+  internal: { riskLevel: "low", riskWeight: 2 },
+  confidential: { riskLevel: "high", riskWeight: 7 },
+  restricted: { riskLevel: "critical", riskWeight: 10 },
+};
+
+export function inferNodeRisk(
+  type: CreateGraphNodeInput["type"],
+  classification: GraphNode["classification"],
+): { riskLevel: GraphNode["riskLevel"]; riskWeight: number } {
+  if (type !== "asset") return { riskLevel: "low", riskWeight: 0 };
+  return inferredRiskByClassification[classification];
+}
+
 function validateMetadata(metadata: Record<string, unknown>): void {
   const unsafeKey = Object.keys(metadata).find((key) =>
     /(secret|token|password|credential|api.?key)/i.test(key),
@@ -49,18 +67,30 @@ function validateMetadata(metadata: Record<string, unknown>): void {
 export class GraphConfigurationService {
   constructor(private readonly store: GraphStore) {}
 
+  async getCatalog(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
+    const [nodes, edges] = await Promise.all([
+      this.store.getAllNodes(),
+      this.store.getAllEdges(),
+    ]);
+    return { nodes, edges };
+  }
+
   async createNode(input: CreateGraphNodeInput): Promise<GraphNode> {
     const metadata = input.metadata ?? {};
     validateMetadata(metadata);
+    const inferred = inferNodeRisk(input.type, input.classification);
+    const riskWasInferred = input.riskLevel === undefined || input.riskWeight === undefined;
     const timestamp = new Date().toISOString();
     const node: GraphNode = {
       id: `${input.type}:${slug(input.label)}-${randomUUID().slice(0, 8)}`,
       type: input.type,
       label: input.label.trim(),
-      riskLevel: input.riskLevel,
-      riskWeight: input.riskWeight,
+      riskLevel: input.riskLevel ?? inferred.riskLevel,
+      riskWeight: input.riskWeight ?? inferred.riskWeight,
       classification: input.classification,
-      metadata,
+      metadata: riskWasInferred
+        ? { ...metadata, riskSource: "classification-default" }
+        : metadata,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -85,6 +115,11 @@ export class GraphConfigurationService {
     if (!source || !target) throw new HttpError(404, "Both relationship nodes must exist");
 
     await this.assertRelationshipIsAllowed(agentNodeId, source, target, input.relation);
+    const existing = (await this.store.getOutgoingEdges(source.id, {
+      relations: [input.relation],
+      statuses: ["authorized"],
+    })).find((edge) => edge.targetId === target.id);
+    if (existing) return existing;
     const edge: GraphEdge = {
       id: `edge:${randomUUID()}`,
       sourceId: source.id,

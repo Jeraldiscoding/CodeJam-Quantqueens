@@ -120,6 +120,27 @@ describe("KnowledgeGraphService", () => {
     await expect(graph.calculateBlastRadius(agentId)).resolves.toMatchObject({ score: 21 });
   });
 
+  it("does not double-count a target reached by multiple direct capabilities", async () => {
+    const graph = new KnowledgeGraphService(
+      makeGraph([
+        edge(
+          "edge-can-read-config",
+          `agent:${agentId}`,
+          "asset:deployment-config",
+          "CAN_READ",
+        ),
+      ]),
+    );
+
+    const result = await graph.calculateBlastRadius(agentId);
+    expect(result.score).toBe(21);
+    expect(result.targets.map((target) => target.node.id)).toEqual([
+      "asset:deployment-config",
+      "asset:production-service",
+      "asset:customer-dataset",
+    ]);
+  });
+
   it("rejects a missing Agent graph node", async () => {
     const graph = new KnowledgeGraphService(makeGraph());
 

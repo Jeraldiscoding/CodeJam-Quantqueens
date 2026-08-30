@@ -59,6 +59,8 @@ export interface EdgeFilter {
 }
 
 export interface GraphStore {
+  getAllNodes(): Promise<GraphNode[]>;
+  getAllEdges(): Promise<GraphEdge[]>;
   getNode(id: string): Promise<GraphNode | null>;
   getOutgoingEdges(sourceId: string, filter?: EdgeFilter): Promise<GraphEdge[]>;
   getIncomingEdges(targetId: string, filter?: EdgeFilter): Promise<GraphEdge[]>;

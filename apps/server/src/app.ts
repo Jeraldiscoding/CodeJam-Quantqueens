@@ -9,6 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import type { GraphConfigurationService } from "./graph-configuration.js";
 import type { KnowledgeGraphService } from "./knowledge-graph.js";
+import { MiddlewareStoreError } from "./middleware-validation.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -27,8 +28,8 @@ const messageBody = z.object({
 const graphNodeBody = z.object({
   type: z.enum(["human", "asset", "data_category"]),
   label: z.string().trim().min(1).max(120),
-  riskLevel: z.enum(["low", "medium", "high", "critical"]),
-  riskWeight: z.number().int().min(0).max(100),
+  riskLevel: z.enum(["low", "medium", "high", "critical"]).optional(),
+  riskWeight: z.number().int().min(0).max(100).optional(),
   classification: z.enum(["public", "internal", "confidential", "restricted"]),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
@@ -103,13 +104,19 @@ export async function createApp(
   });
 
   if (graph && graphConfiguration) {
+    app.get("/api/graph", async () => ({
+      graph: await graphConfiguration.getCatalog(),
+    }));
+
     app.get("/api/agents/:id/graph", async (request) => {
       const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
       return { graph: await graph.getAgentGraph(id) };
     });
 
     app.get("/api/agents/:id/blast-radius", async (request) => {
       const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
       return { blastRadius: await graph.calculateBlastRadius(id) };
     });
 
@@ -120,6 +127,7 @@ export async function createApp(
 
     app.post("/api/agents/:id/graph/relationships", async (request, reply) => {
       const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
       const body = graphRelationshipBody.parse(request.body);
       return reply.code(201).send({
         edge: await graphConfiguration.createRelationship(id, body),
@@ -191,14 +199,24 @@ export async function createApp(
       typeof (error as { statusCode?: unknown }).statusCode === "number"
         ? (error as { statusCode: number }).statusCode
         : null;
+    const middlewareStatus =
+      error instanceof MiddlewareStoreError
+        ? error.code === "VALIDATION"
+          ? 400
+          : error.code === "NOT_FOUND"
+            ? 404
+            : 409
+        : null;
     const statusCode =
       error instanceof HttpError
         ? error.statusCode
         : validationError
           ? 400
-          : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
-            ? frameworkStatus
-            : 500;
+          : middlewareStatus
+            ? middlewareStatus
+            : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
+              ? frameworkStatus
+              : 500;
     if (statusCode >= 500) {
       request.log.error(appError);
     }

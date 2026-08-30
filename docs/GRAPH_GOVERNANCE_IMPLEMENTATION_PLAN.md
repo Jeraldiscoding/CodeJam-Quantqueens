@@ -1,6 +1,6 @@
 # Archived Graph Governance Expansion Plan
 
-The current hackathon implementation and Jerome’s database handoff live only
+The current hackathon implementation and SQLite persistence contract live only
 in [Knowledge Graph MVP Specification](KNOWLEDGE_GRAPH_MVP_SPEC.md).
 
 This file is intentionally kept as a short archive marker so there is no

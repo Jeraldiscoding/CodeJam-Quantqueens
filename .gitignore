@@ -9,6 +9,10 @@ workspaces/
 codex-home/
 coverage/
 *.log
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
 *.tsbuildinfo
 .DS_Store
 deploy/volcengine/.terraform/

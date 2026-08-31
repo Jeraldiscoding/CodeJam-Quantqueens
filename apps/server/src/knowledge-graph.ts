@@ -235,7 +235,10 @@ export class KnowledgeGraphService {
       const inferred = await this.observations?.getOutgoing(
         agent.id,
         current.id,
-        ["observed", "confirmed"],
+        // Text extracted from a prompt or Agent reply is untrusted until a
+        // person confirms it. Pending observations stay visible in the
+        // review/catalog APIs, but must not influence an action decision.
+        ["confirmed"],
       ) ?? [];
       for (const observation of inferred) {
         this.registerEdge(observation, visitedEdgeIds);
@@ -539,7 +542,7 @@ export class KnowledgeGraphService {
       const inferred = await this.observations?.getOutgoing(
         agent.id,
         current.id,
-        ["observed", "confirmed"],
+        ["confirmed"],
       ) ?? [];
       for (const observation of inferred) {
         this.registerEdge(observation, visitedEdgeIds);

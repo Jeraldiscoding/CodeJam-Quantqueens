@@ -41,7 +41,8 @@ Volcengine ECS.
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - SQLite-backed Knowledge Graph and governance persistence
-- Prompt-assisted access configuration and Agent-scoped learned relationships
+- Prompt-assisted access configuration and Agent-scoped, human-reviewed
+  relationship observations
 - Explainable Blast Radius paths and pre-run allow/review/deny decisions
 - Expiring, graph-bound approvals with atomic one-time claims
 - Ordered, persistent structured Run-event timelines
@@ -50,19 +51,48 @@ Volcengine ECS.
 - Reverse graph impact queries used by runtime policy
 - Bounded trusted-history behavioral baselines with poisoning protection
 - A persistent pre-effect circuit breaker for managed resource actions
-- A reloadable safety-proof view that distinguishes permission, contextual
-  risk, and whether the adapter changed anything
+- A product-facing Protected Action Center that distinguishes permission,
+  contextual risk, and whether the adapter changed anything
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
+
+## Middleware problem and rationale
+
+An Agent can hold a valid permission while still making an unsafe request: the
+request may come from the wrong human context, differ from its trusted history,
+or affect sensitive systems several dependencies away. A chat UI, static RBAC,
+or an after-the-fact log cannot prevent that effect.
+
+QuantQueens places a backend enforcement seam immediately before managed
+resource access. It binds the human, Agent, Run, capability, graph impact, and
+trusted history into one decision; only an allowed or explicitly approved
+decision receives a single-use execution claim. This deliberately narrow path
+is testable: Alice's permitted read reaches the real managed adapter, while
+Bob's denied read and an unusual production write never do.
+
+## Submission deliverables
+
+| Required deliverable | Repository evidence |
+| --- | --- |
+| Three-minute live demo | [Exact three-minute submission script](script.md#exact-three-minute-submission-demo): create a real Agent, complete Alice's allowed managed read, deny Bob's cross-user read, inspect its persisted timeline, then show an authorized-but-unsafe production action being stopped before effect. |
+| One-page architecture diagram | [QuantQueens one-page architecture](docs/ONE_PAGE_ARCHITECTURE.md) shows the data flow, untrusted input and Runtime boundaries, trusted middleware, pre-run and pre-effect enforcement, ordered instrumentation, durable state, and recovery/reconstruction point. |
+| Submission-ready code repository | This README contains [fast setup](#fast-judge-setup-no-model-credential-required), the [problem and rationale](#middleware-problem-and-rationale), [design summary](#how-it-works), [automated validation](#validation), [demo steps](#three-minute-judge-flow), and [limitations](#current-middleware-status-and-next-work). Only `.env.example` is tracked; runtime `.env` files and generated databases are ignored. |
+
+The minimum qualifying demonstration is the Alice/Bob path: it contains a real
+backend Run, a real managed SQLite read, an appropriate denial, and persisted
+proof that the denied effect did not happen. Human recovery is useful but is
+not required by the brief's “failure, denial, recovery, degraded, or abuse”
+choice. `REVIEW_REQUIRED` Runs can be approved once; hard authorization denials
+cannot be bypassed.
 
 ## Three-minute judge flow
 
 1. Start the development app and click **Create Agent**. Name it **Alice
    Boundary Judge**, then open **Playground**.
-2. Click **Grant Alice-only read**. The admin backend creates one exact
+2. Click **Grant private-record access**. The admin backend creates one exact
    `CAN_READ` graph capability; Agent creation has already persisted
    `human:alice -> OWNS -> agent:<new ID>`.
-3. Run the Alice/Bob boundary proof. Alice's managed record completes through
+3. Click **Verify resource boundary**. Alice's managed record completes through
    the real SQLite adapter with the newly created Agent as actor. The same
    Agent's attempt against Bob's record returns `DENY`,
    the adapter is not called, and the Run timeline explains that Bob owns the
@@ -71,11 +101,12 @@ Volcengine ECS.
 4. Click **Stop** and observe that another protected action returns `409`
    without a claim or effect. Reload: Agent ownership, permission, status, and
    Run evidence remain persisted.
-5. Select **Release Guardian**, establish the trusted staging history, then try the broader production
-   configuration change. The exact write permission is `ALLOW`, but downstream
+5. Select **Release Guardian**, click **Verify resource boundary**, **Build
+   trusted baseline**, then **Request production update**. The exact write
+   permission is `ALLOW`, but downstream
    customer-data impact plus historical novelty returns `BLOCK`; the durable
    configuration remains unchanged.
-6. Open **What happened**, reload, and inspect the same ordered identity,
+6. Open the **audit timeline**, reload, and inspect the same ordered identity,
    authorization, risk, breaker, and effect evidence.
 
 The checked-in browser regression runs this flow with `npm run test:e2e`.
@@ -90,9 +121,9 @@ npm ci
 npm run dev
 ```
 
-Open <http://127.0.0.1:5173>, create an Agent, and use its two required Track B
-controls. Then select **Release Guardian** for the four-step graph/learning
-extension. The managed read/write path,
+Open <http://127.0.0.1:5173>, create an Agent, and use **Grant private-record
+access** followed by **Verify resource boundary**. Then select **Release
+Guardian** for the graph/history safety flow. The managed read/write path,
 authorization decisions, graph impact, SQLite effect, timeline, and learning
 loop are all real backend behavior. Model-backed chat remains unavailable
 until Ark is configured.
@@ -354,7 +385,8 @@ removes its messages, while retaining terminal Run metadata and ordered
 middleware events as queryable audit evidence.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
-boundaries.
+boundaries, or use the judge-ready
+[one-page architecture diagram](docs/ONE_PAGE_ARCHITECTURE.md).
 
 ## SQLite middleware database
 
@@ -449,14 +481,15 @@ to the highest-weight protected asset. Its footer explains why that path
 was chosen, displays every node and relationship in the route, and lets the
 user focus a different scored asset without changing the aggregate score.
 
-The server also learns non-authoritative relationships from explicit statements
-in user prompts and completed Agent replies. Learned edges retain their source
-Run, evidence excerpt, confidence, and review state. They are drawn as dashed
-relationships in the Network Graph and appear in the Impact Map's inline
-review queue. Observed or confirmed relationships can conservatively increase
-downstream risk; rejected relationships are ignored. This learning path cannot
-create `CAN_READ`, `CAN_WRITE`, `CAN_CALL`, or `CAN_USE`, so it can never grant
-an Agent access.
+The server also extracts non-authoritative relationship observations from
+explicit statements in user prompts and completed Agent replies. Each item
+retains its source Run, evidence excerpt, confidence, and review state. Pending
+items are shown as dashed relationships in the Network Graph and in the Impact
+Map review queue, but they are quarantined from policy traversal. Only a
+human-confirmed observation may add downstream risk; rejected observations are
+ignored. This path cannot create `CAN_READ`, `CAN_WRITE`, `CAN_CALL`, or
+`CAN_USE`, so observations can never grant an Agent access. **Refresh network**
+performs a no-cache read and reports when the latest topology was loaded.
 
 The current schema is deliberately split by responsibility:
 
@@ -571,6 +604,7 @@ silently treating it as passed.
 
 ## Documentation
 
+- [One-page submission architecture](docs/ONE_PAGE_ARCHITECTURE.md)
 - [Session implementation report](docs/SESSION_IMPLEMENTATION_REPORT.md)
 - [Full hackathon codebase audit and remediation status](docs/FULL_HACKATHON_CODEBASE_AUDIT.md)
 - [Architecture](docs/ARCHITECTURE.md)

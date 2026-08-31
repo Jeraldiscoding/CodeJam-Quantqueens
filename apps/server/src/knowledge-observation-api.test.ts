@@ -37,7 +37,7 @@ class LearningRunner implements AgentRunner {
 }
 
 describe("knowledge observation HTTP lifecycle", () => {
-  it("learns from prompt and output, exposes evidence, changes risk, and never grants authority", async () => {
+  it("quarantines learned evidence until confirmation and never grants authority", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-observation-api-"));
     temporaryDirectories.push(root);
     const config = loadConfig({
@@ -147,8 +147,8 @@ describe("knowledge observation HTTP lifecycle", () => {
       url: `/api/agents/${agent.id}/graph`,
     });
     expect(agentGraphResponse.statusCode).toBe(200);
-    expect(agentGraphResponse.json().graph.observationEdges).toHaveLength(2);
-    await expect(graph.calculateBlastRadius(agent.id)).resolves.toMatchObject({ score: 4 });
+    expect(agentGraphResponse.json().graph.observationEdges).toHaveLength(0);
+    await expect(graph.calculateBlastRadius(agent.id)).resolves.toMatchObject({ score: 0 });
 
     const readsFrom = learned.find((observation) => observation.relation === "READS_FROM")!;
     const confirmResponse = await app.inject({
@@ -157,7 +157,21 @@ describe("knowledge observation HTTP lifecycle", () => {
     });
     expect(confirmResponse.statusCode).toBe(200);
     expect(confirmResponse.json().observation.state).toBe("confirmed");
+    await expect(graph.calculateBlastRadius(agent.id)).resolves.toMatchObject({ score: 2 });
+
+    const calls = learned.find((observation) => observation.relation === "CALLS")!;
+    const confirmCallsResponse = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/observations/${calls.id}/confirm`,
+    });
+    expect(confirmCallsResponse.statusCode).toBe(200);
     await expect(graph.calculateBlastRadius(agent.id)).resolves.toMatchObject({ score: 4 });
+
+    const confirmedGraphResponse = await app.inject({
+      method: "GET",
+      url: `/api/agents/${agent.id}/graph`,
+    });
+    expect(confirmedGraphResponse.json().graph.observationEdges).toHaveLength(2);
 
     const rejectResponse = await app.inject({
       method: "POST",

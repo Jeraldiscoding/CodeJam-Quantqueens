@@ -245,14 +245,14 @@ async function managedActionRequest(
     body: JSON.stringify({
       capability: options.capability ?? "CAN_WRITE",
       targetNodeId,
-      payload: { content, source: "guided-security-demo" },
+      payload: { content, source: "protected-action-center" },
       ...(options.claimedPrincipalId
         ? { claimedPrincipalId: options.claimedPrincipalId }
         : {}),
     }),
   });
   const data = (await response.json().catch(() => ({}))) as ManagedActionResult & { error?: string };
-  // A circuit-breaker denial is a successful, explainable demo outcome.
+  // A circuit-breaker denial is a successful, explainable protected outcome.
   if (!response.ok && response.status !== 403) {
     throw new ApiError(data.error ?? "Managed action request failed", response.status);
   }
@@ -294,7 +294,12 @@ export const api = {
     }),
   messages: (id: string) =>
     request<{ messages: Message[] }>("/api/agents/" + id + "/messages"),
-  wholeGraph: () => request<{ graph: GraphCatalog }>("/api/graph"),
+  wholeGraph: () => request<{ graph: GraphCatalog }>("/api/graph", {
+    // The Network Graph has an explicit refresh control. Do not let the
+    // browser satisfy that refresh from a cached response.
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" },
+  }),
   graph: (id: string) => request<{ graph: AgentGraph }>("/api/agents/" + id + "/graph"),
   blastRadius: (id: string) =>
     request<{ blastRadius: BlastRadius }>("/api/agents/" + id + "/blast-radius"),

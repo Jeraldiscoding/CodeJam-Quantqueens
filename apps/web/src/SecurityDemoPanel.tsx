@@ -215,7 +215,7 @@ export function SecurityDemoPanel({
     try {
       const result = await api.resetCircuitBreaker(
         agent.id,
-        "Reset from the guided security demonstration",
+        "Reset by an operator from the protected action center",
       );
       setBreaker(result.circuitBreaker);
       await refreshContext();
@@ -249,31 +249,31 @@ export function SecurityDemoPanel({
     <section className="security-demo" aria-labelledby="security-demo-title">
       <header className="security-demo-heading">
         <div>
-          <span className="eyebrow">Track B · The Bouncer</span>
-          <h3 id="security-demo-title">See every protected decision before anything changes</h3>
+          <span className="eyebrow">Policy enforcement</span>
+          <h3 id="security-demo-title">Protected action center</h3>
           <p>
             {extendedDemo
-              ? "Prove the required Alice/Bob boundary, teach normal behavior, then watch graph impact stop an unusual but permitted action."
-              : `Alice created ${agent.name}. Give this Agent one exact read permission, then prove it still cannot read Bob's data.`}
+              ? "Access, trusted behavior, and downstream impact are evaluated before a managed resource can change."
+              : `Configure ${agent.name}'s exact access, then verify that authenticated ownership still protects another user's data.`}
           </p>
         </div>
         <span
           className={`security-stop security-stop-${breaker?.state.toLowerCase() ?? "normal"}`}
           role="status"
-          aria-label={`Safety stop ${breaker?.state === "TRIPPED" ? "active" : breaker?.state === "WARN" ? "review" : "ready"}`}
+          aria-label={`Protection status: ${breaker?.state === "TRIPPED" ? "action blocked" : breaker?.state === "WARN" ? "review needed" : "ready"}`}
         >
-          Safety stop: {breaker?.state === "TRIPPED" ? "active" : breaker?.state === "WARN" ? "review" : "ready"}
+          {breaker?.state === "TRIPPED" ? "Action blocked" : breaker?.state === "WARN" ? "Review needed" : "Protection ready"}
         </span>
       </header>
 
-      <div className="security-demo-context" aria-label="Learned safety context">
+      <div className="security-demo-context" aria-label="Active protection context">
         <div>
-          <span>Agent identity</span>
+          <span>Authenticated path</span>
           <strong>Alice → {agent.name}</strong>
           <small>{capabilityReady ? "One exact Alice-data permission is active" : "No resource permission has been granted yet"}</small>
         </div>
         <div>
-          <span>{extendedDemo ? "Trusted history" : "Permission boundary"}</span>
+          <span>{extendedDemo ? "Behavior baseline" : "Resource boundary"}</span>
           <strong>{extendedDemo ? `${baseline?.eligibleRunCount ?? 0} trusted Runs` : "Alice only"}</strong>
           <small>
             {extendedDemo
@@ -283,115 +283,137 @@ export function SecurityDemoPanel({
         </div>
       </div>
 
-      <div className="security-demo-actions" aria-label="Guided proof steps">
-        <button
-          className="button button-ghost"
-          type="button"
-          disabled={working !== null || capabilityReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
-          onClick={() => void configureOwnershipBoundary()}
-        >
-          {working === "configure" ? "Adding exact permission…" : capabilityReady ? "1. Alice-only permission ready" : "1. Grant Alice-only read"}
-        </button>
-        <button
-          className="button button-ghost"
-          type="button"
-          disabled={working !== null || !capabilityReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
-          onClick={() => void proveOwnershipBoundary()}
-        >
-          {working === "boundary" ? "Checking Alice and Bob…" : boundaryProof ? "2. User boundary proven" : "2. Prove Alice/Bob boundary"}
-        </button>
-        {extendedDemo && (
-          <>
-            <button
-              className="button button-ghost"
-              type="button"
-              disabled={working !== null || !boundaryProof || historyReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
-              onClick={() => void establishHistory()}
-            >
-              {working === "history" ? "Running safe staging actions…" : historyReady ? "3. Normal staging learned" : "3. Teach normal staging work"}
-            </button>
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={working !== null || !historyReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
-              onClick={() => void tryUnusualAction()}
-            >
-              {working === "unusual" ? "Checking before any change…" : "4. Try broader production change"}
-            </button>
-          </>
-        )}
-      </div>
+      <div className="security-demo-workspace">
+        <div className="security-action-panel">
+          <div className="security-panel-label"><span>Managed controls</span><small>Each control calls the live policy and resource path.</small></div>
+          <div className="security-demo-actions" aria-label="Protected action controls">
+            <div className="security-action">
+              <span>Access</span>
+              <button
+                className="button button-ghost"
+                type="button"
+                disabled={working !== null || capabilityReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
+                onClick={() => void configureOwnershipBoundary()}
+              >
+                {working === "configure" ? "Adding permission…" : capabilityReady ? "Private-record access active" : "Grant private-record access"}
+              </button>
+              <small>Store one exact Alice-only read capability.</small>
+            </div>
+            <div className="security-action">
+              <span>Identity</span>
+              <button
+                className="button button-ghost"
+                type="button"
+                disabled={working !== null || !capabilityReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
+                onClick={() => void proveOwnershipBoundary()}
+              >
+                {working === "boundary" ? "Checking ownership…" : boundaryProof ? "Resource boundary verified" : "Verify resource boundary"}
+              </button>
+              <small>Compare an owned read with a cross-user attempt.</small>
+            </div>
+            {extendedDemo && (
+              <>
+                <div className="security-action">
+                  <span>Behavior</span>
+                  <button
+                    className="button button-ghost"
+                    type="button"
+                    disabled={working !== null || !boundaryProof || historyReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
+                    onClick={() => void establishHistory()}
+                  >
+                    {working === "history" ? "Recording safe actions…" : historyReady ? "Staging baseline ready" : "Build trusted baseline"}
+                  </button>
+                  <small>Record successful staging work as normal scope.</small>
+                </div>
+                <div className="security-action security-action-emphasis">
+                  <span>Production</span>
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    disabled={working !== null || !historyReady || breaker?.state === "TRIPPED" || agent.status === "stopped"}
+                    onClick={() => void tryUnusualAction()}
+                  >
+                    {working === "unusual" ? "Evaluating impact…" : "Request production update"}
+                  </button>
+                  <small>Evaluate a broader change before any effect.</small>
+                </div>
+              </>
+            )}
+          </div>
 
-      {boundaryProof && (
-        <div className="security-boundary-proof" aria-label="Track B permission boundary proof">
-          <div>
-            <span aria-hidden="true">✓</span>
-            <p><strong>Alice's private records</strong><small>Read completed through the protected adapter</small></p>
-          </div>
-          <div>
-            <span aria-hidden="true">×</span>
-            <p><strong>Bob's private records</strong><small>Permission denied; caller-supplied identity ignored</small></p>
-          </div>
-          <button type="button" onClick={() => void onOpenRun(boundaryProof.foreignRunId)}>
-            Inspect denied Run
-          </button>
+          {boundaryProof && (
+            <div className="security-boundary-proof" aria-label="Resource permission boundary">
+              <div>
+                <span aria-hidden="true">✓</span>
+                <p><strong>Alice's private records</strong><small>Read completed through the protected adapter</small></p>
+              </div>
+              <div>
+                <span aria-hidden="true">×</span>
+                <p><strong>Bob's private records</strong><small>Permission denied; caller-supplied identity ignored</small></p>
+              </div>
+              <button type="button" onClick={() => void onOpenRun(boundaryProof.foreignRunId)}>
+                Inspect denied Run
+              </button>
+            </div>
+          )}
         </div>
-      )}
 
-      <div className="security-demo-result" aria-live="polite" aria-busy={working !== null}>
-        {error ? (
-          <p className="security-demo-error" role="alert">{error}</p>
-        ) : lastResult || evidence ? (
-          <>
-            <dl className="security-decision-line">
-              <div aria-label="Permission decision"><dt>Permission</dt><dd>{authorization === "ALLOW" ? "Allowed" : "Denied"}</dd></div>
-              <div aria-label="Safety decision"><dt>Safety</dt><dd>{safetyLabel(safety)}</dd></div>
-              <div aria-label="Resource effect"><dt>Resource</dt><dd>{effectLabel(effect)}</dd></div>
-            </dl>
-            <p>{evidence?.verdict.explanation ?? (lastResult ? decisionCopy(lastResult) : "")}</p>
-            {impactTargets.length > 0 && (
-              <div className="security-impact-list">
-                <span>What could be affected</span>
-                <ul>{impactTargets.map((target) => <li key={target.id}>{target.label}</li>)}</ul>
-                {impactPath.length > 1 && (
-                  <ol className="security-impact-path" aria-label="Relevant impact path">
-                    {impactPath.map((label, index) => <li key={`${label}:${index}`}>{label}</li>)}
-                  </ol>
+        <div className="security-demo-result" aria-live="polite" aria-busy={working !== null}>
+          <div className="security-panel-label"><span>Latest decision</span><small>Permission → safety → effect</small></div>
+          {error ? (
+            <p className="security-demo-error" role="alert">{error}</p>
+          ) : lastResult || evidence ? (
+            <>
+              <dl className="security-decision-line">
+                <div aria-label="Permission decision"><dt>Permission</dt><dd>{authorization === "ALLOW" ? "Allowed" : "Denied"}</dd></div>
+                <div aria-label="Safety decision"><dt>Safety</dt><dd>{safetyLabel(safety)}</dd></div>
+                <div aria-label="Resource effect"><dt>Resource</dt><dd>{effectLabel(effect)}</dd></div>
+              </dl>
+              <p>{evidence?.verdict.explanation ?? (lastResult ? decisionCopy(lastResult) : "")}</p>
+              {impactTargets.length > 0 && (
+                <div className="security-impact-list">
+                  <span>Potentially affected</span>
+                  <ul>{impactTargets.map((target) => <li key={target.id}>{target.label}</li>)}</ul>
+                  {impactPath.length > 1 && (
+                    <ol className="security-impact-path" aria-label="Relevant impact path">
+                      {impactPath.map((label, index) => <li key={`${label}:${index}`}>{label}</li>)}
+                    </ol>
+                  )}
+                </div>
+              )}
+              {evidence && (
+                <div className="security-proof-line" aria-label="Persisted decision record">
+                  <span>Decision record</span>
+                  <strong>{evidence.timeline.eventCount} ordered events</strong>
+                  <small>
+                    Baseline {evidence.historicalContext ? `revision ${evidence.historicalContext.revision}` : "not used"}
+                    {" · "}Impact {evidence.impactAtDecision.blastRadius} resources
+                    {" · "}{evidence.effectEvidence.policyClaimed ? "Effect claim issued" : "Effect never claimed"}
+                  </small>
+                </div>
+              )}
+              <div className="security-result-actions">
+                <button className="button button-ghost" type="button" onClick={() => void onOpenRun(evidence?.run.id ?? lastResult!.run.id)}>
+                  Open audit timeline
+                </button>
+                {breaker?.state === "TRIPPED" && (
+                  <button className="button button-ghost" type="button" disabled={working !== null} onClick={() => void resetSafetyStop()}>
+                    {working === "reset" ? "Resetting…" : "Reset safety stop"}
+                  </button>
                 )}
               </div>
-            )}
-            {evidence && (
-              <div className="security-proof-line" aria-label="Persisted safety proof">
-                <span>Persisted proof</span>
-                <strong>{evidence.timeline.eventCount} ordered events</strong>
-                <small>
-                  Baseline {evidence.historicalContext ? `revision ${evidence.historicalContext.revision}` : "not used"}
-                  {" · "}Impact {evidence.impactAtDecision.blastRadius} resources
-                  {" · "}{evidence.effectEvidence.policyClaimed ? "Effect claim issued" : "Effect never claimed"}
-                </small>
-              </div>
-            )}
-            <div className="security-result-actions">
-              <button className="button button-ghost" type="button" onClick={() => void onOpenRun(evidence?.run.id ?? lastResult!.run.id)}>
-                View persistent Run timeline
-              </button>
-              {breaker?.state === "TRIPPED" && (
-                <button className="button button-ghost" type="button" disabled={working !== null} onClick={() => void resetSafetyStop()}>
-                  {working === "reset" ? "Resetting…" : "Reset safety stop"}
-                </button>
+              {evidence && (
+                <details className="security-coverage">
+                  <summary>Coverage and limits</summary>
+                  <p><strong>{evidence.coverage.label}.</strong> {evidence.coverage.guarantee}</p>
+                  <p>{evidence.coverage.limitation}</p>
+                </details>
               )}
-            </div>
-            {evidence && (
-              <details className="security-coverage">
-                <summary>What this proof protects</summary>
-                <p><strong>{evidence.coverage.label}.</strong> {evidence.coverage.guarantee}</p>
-                <p>{evidence.coverage.limitation}</p>
-              </details>
-            )}
-          </>
-        ) : (
-          <p>Start by granting one exact Alice-data permission. Both reads then hit the real backend path; only Alice's owned resource may reach the adapter.</p>
-        )}
+            </>
+          ) : (
+            <div className="security-empty-result"><strong>No decision yet</strong><p>Start with an exact private-record permission. Every managed action will show its access verdict, safety verdict, and real resource effect here.</p></div>
+          )}
+        </div>
       </div>
     </section>
   );

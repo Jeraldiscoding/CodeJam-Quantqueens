@@ -89,8 +89,9 @@ Use an incremental import migration and preserve existing local data.
 
 ## Lower-priority hardening
 
-- Quarantine unconfirmed prompt-derived graph observations from enforcement, or
-  require confirmation/freshness before they can increase runtime impact.
+- Add freshness, expiry, contradiction handling, and provenance aggregation to
+  relationship observations. Pending prompt/reply observations are now
+  quarantined from enforcement until a human confirms them.
 - Add an approved local container/OS scanner and Terraform/provider scanning.
 - Add retention and compaction policies for the long-lived event timeline.
   Adaptive baseline aggregation is bounded to the latest 20 completed Runs,

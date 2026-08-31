@@ -21,6 +21,8 @@ const server = spawn(process.execPath, ["apps/server/dist/index.js"], {
     AGENT_WORKSPACE_ROOT: path.join(stateRoot, "workspaces"),
     CODEX_HOME: path.join(stateRoot, "codex-home"),
     CODEX_BIN: "codex-not-used-by-playwright",
+    ARK_API_KEY: "playwright-placeholder-key",
+    ARK_MODEL: "ep-playwright-placeholder",
     APP_PRINCIPAL_ID: "human:alice",
     APP_PRINCIPAL_NAME: "Alice",
     APP_PRINCIPAL_ROLE: "admin",

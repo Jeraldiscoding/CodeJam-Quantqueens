@@ -101,7 +101,41 @@ export function createDemoGraphSeed(
         0,
         "internal",
       ),
+      ...(!isDataSteward
+        ? [
+            node(
+              "human:bob",
+              "human",
+              "Bob (Demo User)",
+              "low",
+              0,
+              "internal",
+            ),
+          ]
+        : []),
       node(agentNodeId, "agent", agentLabel, "medium", 0, "internal", { agentId }),
+      ...(!isDataSteward
+        ? [
+            node(
+              "asset:alice-private-records",
+              "asset",
+              "Alice's private records",
+              "low",
+              0,
+              "internal",
+              { kind: "mock_user_data", adapterKind: "managed_state", ownerId: "human:alice" },
+            ),
+            node(
+              "asset:bob-private-records",
+              "asset",
+              "Bob's private records",
+              "low",
+              0,
+              "internal",
+              { kind: "mock_user_data", adapterKind: "managed_state", ownerId: "human:bob" },
+            ),
+          ]
+        : []),
       node(
         "asset:deployment-config",
         "asset",
@@ -109,7 +143,16 @@ export function createDemoGraphSeed(
         "medium",
         4,
         "internal",
-        { kind: "configuration" },
+        { kind: "configuration", adapterKind: "managed_state" },
+      ),
+      node(
+        "asset:staging-config",
+        "asset",
+        "Staging configuration",
+        "low",
+        0,
+        "internal",
+        { kind: "configuration", adapterKind: "managed_state" },
       ),
       node(
         "asset:production-service",
@@ -155,12 +198,32 @@ export function createDemoGraphSeed(
       ...(isDataSteward
         ? [edge("demo:steward-can-read-customers", agentNodeId, "asset:customer-dataset", "CAN_READ")]
         : [
+            edge(
+              "demo:alice-owns-private-records",
+              "human:alice",
+              "asset:alice-private-records",
+              "OWNS",
+            ),
+            edge(
+              "demo:bob-owns-private-records",
+              "human:bob",
+              "asset:bob-private-records",
+              "OWNS",
+            ),
+            edge(
+              "demo:release-can-read-alice-records",
+              agentNodeId,
+              "asset:alice-private-records",
+              "CAN_READ",
+            ),
             edge("demo:can-write-config", agentNodeId, "asset:deployment-config", "CAN_WRITE"),
+            edge("demo:can-write-staging-config", agentNodeId, "asset:staging-config", "CAN_WRITE"),
             edge("demo:can-call-release-api", agentNodeId, "asset:release-api", "CAN_CALL"),
             edge("demo:config-deploys-production", "asset:deployment-config", "asset:production-service", "DEPLOYS_TO"),
             edge("demo:production-processes-customers", "asset:production-service", "asset:customer-dataset", "PROCESSES"),
             edge("demo:release-api-deploys-production", "asset:release-api", "asset:production-service", "DEPLOYS_TO"),
             edge("demo:config-deploys-staging", "asset:deployment-config", "asset:staging-service", "DEPLOYS_TO"),
+            edge("demo:staging-config-deploys-staging", "asset:staging-config", "asset:staging-service", "DEPLOYS_TO"),
             edge("demo:staging-processes-synthetic", "asset:staging-service", "asset:synthetic-dataset", "PROCESSES"),
             edge("demo:customers-contain-pii", "asset:customer-dataset", "data_category:pii", "CONTAINS"),
             edge("demo:synthetic-contains-test-data", "asset:synthetic-dataset", "data_category:synthetic", "CONTAINS"),

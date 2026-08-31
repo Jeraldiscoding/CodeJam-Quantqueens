@@ -3,7 +3,11 @@ import path from "node:path";
 import { z } from "zod";
 
 const envSchema = z.object({
-  HOST: z.string().default("0.0.0.0"),
+  // A bare local checkout must not become reachable from the surrounding
+  // network without an operator making that exposure explicit. Docker and
+  // the cloud deployment set 0.0.0.0 themselves and production then requires
+  // a strong APP_AUTH_TOKEN.
+  HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.string().default("info"),
   APP_DATA_DIR: z.string().default(path.resolve(".data")),
@@ -38,6 +42,9 @@ const envSchema = z.object({
     .max(128)
     .regex(/^[A-Za-z0-9._~-]*$/, "APP_AUTH_TOKEN must use URL-safe characters")
     .optional(),
+  APP_PRINCIPAL_ID: z.string().trim().min(3).max(180).default("human:alice"),
+  APP_PRINCIPAL_NAME: z.string().trim().min(1).max(120).default("Alice"),
+  APP_PRINCIPAL_ROLE: z.enum(["viewer", "operator", "approver", "admin"]).default("admin"),
   ARK_API_KEY: z.string().optional(),
   ARK_MODEL: z.string().optional(),
   ARK_BASE_URL: z
@@ -94,6 +101,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,
+    principalId: env.APP_PRINCIPAL_ID,
+    principalName: env.APP_PRINCIPAL_NAME,
+    principalRole: env.APP_PRINCIPAL_ROLE,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
     arkModel: env.ARK_MODEL?.trim() ?? "",
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),

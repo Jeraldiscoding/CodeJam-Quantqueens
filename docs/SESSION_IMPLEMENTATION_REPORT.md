@@ -1,5 +1,11 @@
 # Session Implementation Report
 
+> **Historical before-state report.** The counts and capability gaps below
+> describe the graph session at that point in time and are intentionally
+> retained as engineering history. For current executable behavior and known
+> limits, use [Architecture](ARCHITECTURE.md) and
+> [Current Weaknesses](CURRENT_WEAKNESSES.md).
+
 Date: 2026-08-31  
 Branch reviewed: `policy-enforcement`  
 Status: implemented and verified locally; the changes are not committed by this report.

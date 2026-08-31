@@ -142,6 +142,7 @@ describe("SqliteGraphStore", () => {
       edge("edge:z-can-write", agent.id, assetA.id, "CAN_WRITE"),
       edge("edge:a-can-read", agent.id, assetB.id, "CAN_READ"),
       edge("edge:owns", human.id, agent.id, "OWNS"),
+      edge("edge:owns-asset", human.id, assetA.id, "OWNS"),
       edge("edge:impact", assetA.id, assetB.id, "DEPLOYS_TO", { createdAt: later }),
       edge("edge:b-denied", agent.id, assetA.id, "DENIED", {
         status: "denied",
@@ -168,6 +169,10 @@ describe("SqliteGraphStore", () => {
     await expect(store.getIncomingEdges(agent.id)).resolves.toMatchObject([
       { id: "edge:owns" },
     ]);
+    await expect(store.getIncomingEdges(assetA.id, {
+      relations: ["OWNS"],
+      statuses: ["authorized"],
+    })).resolves.toMatchObject([{ id: "edge:owns-asset", sourceId: human.id }]);
     await expect(
       store.getOutgoingEdges(agent.id, {
         relations: ["CAN_WRITE", "DENIED"],
@@ -226,6 +231,7 @@ describe("SqliteGraphStore", () => {
     const invalidEdges: GraphEdge[] = [
       edge("edge:missing-target", agent.id, "asset:missing", "CAN_READ"),
       edge("edge:wrong-source", human.id, assetA.id, "CAN_WRITE"),
+      edge("edge:wrong-owner-source", agent.id, assetA.id, "OWNS"),
       edge("edge:audit-without-run", agent.id, assetA.id, "ATTEMPTED", {
         status: "attempted",
       }),

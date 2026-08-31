@@ -9,6 +9,10 @@ const service = {
 } as unknown as AgentService;
 
 describe("HTTP boundary", () => {
+  it("defaults a bare checkout to loopback instead of exposing an unauthenticated dev server", () => {
+    expect(loadConfig({ NODE_ENV: "test" }).host).toBe("127.0.0.1");
+  });
+
   it("protects API routes with the configured shared token", async () => {
     const app = await createApp(
       loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),

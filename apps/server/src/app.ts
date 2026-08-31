@@ -13,6 +13,14 @@ import type { KnowledgeObservationService } from "./knowledge-observation.js";
 import { MiddlewareStoreError } from "./middleware-validation.js";
 import type { PolicyService } from "./policy-service.js";
 import type { ResourceGateway } from "./resource-gateway.js";
+import { projectRunEvent, type RunTimeline } from "./run-timeline.js";
+import type { ExecutionIdentityService } from "./execution-identity.js";
+import type { DelegationService } from "./delegation-service.js";
+import type { BehavioralBaselineService } from "./behavioral-security.js";
+import type { SecurityStore } from "./security-store.js";
+import type { AuthenticatedPrincipal } from "./security-types.js";
+import type { ControlledActionRuntime } from "./controlled-action-runtime.js";
+import type { SafetyEvidenceService } from "./safety-evidence.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -43,11 +51,31 @@ const protectedActionBody = z.object({
   capability: z.enum(["CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE"]),
   targetNodeId: z.string().min(3).max(180),
   payload: z.record(z.string(), z.unknown()).optional(),
+  delegationId: z.string().min(12).max(180).optional(),
 });
+const managedActionBody = protectedActionBody.omit({ operationId: true });
 const resumeActionBody = z.object({
   decisionId: z.string().min(3).max(180),
   payload: z.record(z.string(), z.unknown()).optional(),
+  delegationId: z.string().min(12).max(180).optional(),
 });
+const resourceIdParams = z.object({ id: z.string().min(3).max(180) });
+const agentResourceParams = z.object({
+  agentId: z.string().uuid(),
+  resourceId: z.string().min(3).max(180),
+});
+const delegationIdParams = z.object({ id: z.string().min(12).max(180) });
+const delegationBody = z.object({
+  childAgentId: z.string().uuid(),
+  parentDelegationId: z.string().min(12).max(180).optional(),
+  expiresAt: z.string().datetime(),
+  reason: z.string().trim().max(500).optional(),
+  scope: z.array(z.object({
+    capability: z.enum(["CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE"]),
+    targetNodeId: z.string().min(3).max(180),
+  })).min(1).max(30),
+});
+const breakerResetBody = z.object({ reason: z.string().trim().min(3).max(500) });
 const approvalDecisionBody = z.object({
   reason: z.string().trim().max(500).optional(),
   actorHumanNodeId: z.string().min(3).max(180).optional(),
@@ -106,6 +134,16 @@ export async function createApp(
   policy?: PolicyService,
   gateway?: ResourceGateway,
   knowledgeObservations?: KnowledgeObservationService,
+  runTimeline?: RunTimeline,
+  securityRuntime?: {
+    principal: AuthenticatedPrincipal;
+    identities: ExecutionIdentityService;
+    delegations: DelegationService;
+    baselines: BehavioralBaselineService;
+    security: SecurityStore;
+    controlledActions: ControlledActionRuntime;
+    safetyEvidence: SafetyEvidenceService;
+  },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -121,6 +159,49 @@ export async function createApp(
         ? ["http://localhost:5173", "http://127.0.0.1:5173"]
         : false,
   });
+
+  /**
+   * The demo has one server-attested principal. Identity-like headers and
+   * request-body fields never select a different person or role.
+   */
+  const actorPrincipalId = (authenticated: boolean) =>
+    authenticated ? "principal:operator" : "principal:local-dev";
+  const principalFor = (request: { headers: Record<string, unknown> }): AuthenticatedPrincipal =>
+    securityRuntime?.principal ?? {
+      id: actorPrincipalId(config.authToken.length > 0 && Boolean(request.headers.authorization)),
+      kind: "system",
+      displayName: "Local operator",
+      role: "operator",
+      authenticationSource: "system",
+    };
+  const requireDurableRole = async (
+    request: { headers: Record<string, unknown> },
+    allowedRoles: readonly AuthenticatedPrincipal["role"][],
+    message: string,
+  ) => {
+    const principal = principalFor(request);
+    // Narrow unit tests may compose only the legacy lifecycle service. In the
+    // integrated application, SQLite is authoritative and a stale process-local
+    // role must fail closed after a downgrade or deactivation.
+    if (securityRuntime) {
+      const durablePrincipal = await securityRuntime.security.getPrincipal(principal.id);
+      if (
+        !durablePrincipal ||
+        durablePrincipal.role !== principal.role ||
+        !allowedRoles.includes(durablePrincipal.role)
+      ) {
+        throw new HttpError(403, message);
+      }
+    }
+    return principal;
+  };
+  const requireGraphAdministrator = async (request: { headers: Record<string, unknown> }) => {
+    return requireDurableRole(
+      request,
+      ["admin"],
+      "Only an administrator may change graph permissions or safety facts",
+    );
+  };
 
   app.addHook("onRequest", async (request, reply) => {
     const matchedPath = request.routeOptions.url ?? "";
@@ -163,6 +244,11 @@ export async function createApp(
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post("/api/agents", async (request, reply) => {
+    await requireDurableRole(
+      request,
+      ["operator", "admin"],
+      "Only an operator or administrator may create Agents",
+    );
     const body = createAgentBody.parse(request.body);
     const agent = await service.createAgent(body);
     return reply.code(201).send({ agent });
@@ -191,11 +277,13 @@ export async function createApp(
     });
 
     app.post("/api/graph/nodes", async (request, reply) => {
+      await requireGraphAdministrator(request);
       const body = graphNodeBody.parse(request.body);
       return reply.code(201).send({ node: await graphConfiguration.createNode(body) });
     });
 
     app.post("/api/agents/:id/graph/relationships", async (request, reply) => {
+      await requireGraphAdministrator(request);
       const { id } = agentIdParams.parse(request.params);
       service.getAgent(id);
       const body = graphRelationshipBody.parse(request.body);
@@ -212,6 +300,7 @@ export async function createApp(
     });
 
     app.post("/api/agents/:id/graph/suggestions/confirm", async (request, reply) => {
+      await requireGraphAdministrator(request);
       const { id } = agentIdParams.parse(request.params);
       service.getAgent(id);
       const body = confirmPromptSuggestionBody.parse(request.body);
@@ -228,12 +317,14 @@ export async function createApp(
       });
 
       app.post("/api/agents/:id/observations/:observationId/confirm", async (request) => {
+        await requireGraphAdministrator(request);
         const { id, observationId } = observationIdParams.parse(request.params);
         service.getAgent(id);
         return { observation: await knowledgeObservations.resolve(id, observationId, "confirmed") };
       });
 
       app.post("/api/agents/:id/observations/:observationId/reject", async (request) => {
+        await requireGraphAdministrator(request);
         const { id, observationId } = observationIdParams.parse(request.params);
         service.getAgent(id);
         return { observation: await knowledgeObservations.resolve(id, observationId, "rejected") };
@@ -242,15 +333,6 @@ export async function createApp(
   }
 
   if (policy && gateway) {
-    /**
-     * Actor identity is derived on the server from the authenticated request,
-     * never from the body. A caller cannot claim to be someone else.
-     */
-    const actorPrincipalId = (authenticated: boolean) =>
-      authenticated ? "principal:operator" : "principal:local-dev";
-    const principalFor = (request: { headers: Record<string, unknown> }) =>
-      actorPrincipalId(config.authToken.length > 0 && Boolean(request.headers.authorization));
-
     app.post("/api/runs/:id/actions", async (request, reply) => {
       const { id } = runIdParams.parse(request.params);
       const body = protectedActionBody.parse(request.body);
@@ -260,7 +342,8 @@ export async function createApp(
         capability: body.capability,
         targetNodeId: body.targetNodeId,
         payload: body.payload,
-        actorPrincipalId: principalFor(request),
+        principal: principalFor(request),
+        ...(body.delegationId ? { delegationId: body.delegationId } : {}),
       });
       const statusCode =
         outcome.status === "executed" ? 200 : outcome.status === "denied" ? 403 : 202;
@@ -274,14 +357,20 @@ export async function createApp(
         runId: id,
         decisionId: body.decisionId,
         payload: body.payload,
-        actorPrincipalId: principalFor(request),
+        principal: principalFor(request),
+        ...(body.delegationId ? { delegationId: body.delegationId } : {}),
       });
       return reply.code(outcome.status === "executed" ? 200 : 403).send(outcome);
     });
 
     app.post("/api/runs/:id/resume", async (request) => {
+      await requireDurableRole(
+        request,
+        ["operator", "admin"],
+        "Only an operator or administrator may resume an Agent Run",
+      );
       const { id } = runIdParams.parse(request.params);
-      return { run: await service.resumeRun(id) };
+      return { run: await service.resumeRun(id, principalFor(request)) };
     });
 
     app.get("/api/runs/:id/policy", async (request) => {
@@ -303,11 +392,16 @@ export async function createApp(
     app.post("/api/policy/approvals/:id/approve", async (request) => {
       const { id } = approvalIdParams.parse(request.params);
       const body = approvalDecisionBody.parse(request.body ?? {});
+      const principal = await requireDurableRole(
+        request,
+        ["approver", "admin"],
+        "This identity is not allowed to approve unusual actions",
+      );
       return policy.resolveApproval({
         approvalRequestId: id,
         resolution: "approved",
-        actorPrincipalId: principalFor(request),
-        actorHumanNodeId: body.actorHumanNodeId,
+        actorPrincipalId: principal.id,
+        actorHumanNodeId: securityRuntime ? undefined : body.actorHumanNodeId,
         reason: body.reason,
       });
     });
@@ -315,11 +409,16 @@ export async function createApp(
     app.post("/api/policy/approvals/:id/reject", async (request) => {
       const { id } = approvalIdParams.parse(request.params);
       const body = approvalDecisionBody.parse(request.body ?? {});
+      const principal = await requireDurableRole(
+        request,
+        ["approver", "admin"],
+        "This identity is not allowed to reject unusual actions",
+      );
       const resolved = await policy.resolveApproval({
         approvalRequestId: id,
         resolution: "rejected",
-        actorPrincipalId: principalFor(request),
-        actorHumanNodeId: body.actorHumanNodeId,
+        actorPrincipalId: principal.id,
+        actorHumanNodeId: securityRuntime ? undefined : body.actorHumanNodeId,
         reason: body.reason,
       });
       // A refused pre-run review must end the Run, not leave it paused forever.
@@ -328,29 +427,175 @@ export async function createApp(
         await service.rejectPendingRun(
           decision.decision.runId,
           `A reviewer rejected this run: ${body.reason ?? "no reason given"}`,
+          principal,
+        );
+      } else if (
+        decision.decision.operationId.startsWith("managed:") &&
+        securityRuntime
+      ) {
+        await securityRuntime.controlledActions.finishRejected(
+          decision.decision.runId,
+          body.reason ?? "no reason given",
         );
       }
       return resolved;
     });
+
+    if (securityRuntime && graph) {
+      app.post("/api/agents/:id/managed-actions", async (request, reply) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        const body = managedActionBody.parse(request.body);
+        const result = await securityRuntime.controlledActions.request({
+          agentId: id,
+          principal: principalFor(request),
+          capability: body.capability,
+          targetNodeId: body.targetNodeId,
+          ...(body.payload ? { payload: body.payload } : {}),
+          ...(body.delegationId ? { delegationId: body.delegationId } : {}),
+        });
+        const code = result.outcome.status === "executed" ? 200 : result.outcome.status === "approval_required" ? 202 : 403;
+        return reply.code(code).send(result);
+      });
+
+      app.post("/api/runs/:id/managed-actions/resume", async (request, reply) => {
+        const { id } = runIdParams.parse(request.params);
+        const body = resumeActionBody.parse(request.body);
+        const result = await securityRuntime.controlledActions.resume({
+          runId: id,
+          decisionId: body.decisionId,
+          principal: principalFor(request),
+          ...(body.payload ? { payload: body.payload } : {}),
+          ...(body.delegationId ? { delegationId: body.delegationId } : {}),
+        });
+        return reply.code(result.outcome.status === "executed" ? 200 : 403).send(result);
+      });
+
+      app.post("/api/runs/:id/delegations", async (request, reply) => {
+        const { id } = runIdParams.parse(request.params);
+        const body = delegationBody.parse(request.body);
+        const identity = await securityRuntime.identities.resolve({
+          runId: id,
+          principal: principalFor(request),
+          ...(body.parentDelegationId ? { delegationId: body.parentDelegationId } : {}),
+        });
+        const delegation = await securityRuntime.delegations.delegate({
+          identity,
+          childAgentId: body.childAgentId,
+          requestedScope: body.scope,
+          expiresAt: body.expiresAt,
+          ...(body.reason ? { reason: body.reason } : {}),
+        });
+        return reply.code(201).send({ delegation });
+      });
+
+      app.post("/api/delegations/:id/revoke", async (request) => {
+        const { id } = delegationIdParams.parse(request.params);
+        const { reason } = breakerResetBody.parse(request.body);
+        const existing = await securityRuntime.security.getDelegation(id);
+        if (!existing) throw new HttpError(404, "Delegation not found");
+        const identity = await securityRuntime.identities.resolve({
+          runId: existing.runId,
+          principal: principalFor(request),
+          ...(existing.parentDelegationId ? { delegationId: existing.parentDelegationId } : {}),
+        });
+        return { delegation: await securityRuntime.delegations.revoke(identity, id, reason) };
+      });
+
+      app.get("/api/agents/:id/behavior-baseline", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { baseline: await securityRuntime.baselines.rebuild(id) };
+      });
+
+      app.get("/api/agents/:id/circuit-breaker", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { circuitBreaker: await securityRuntime.security.getBreaker(id) };
+      });
+
+      app.get("/api/agents/:id/safety-evidence/latest", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        return { evidence: await securityRuntime.safetyEvidence.latestForAgent(id) };
+      });
+
+      app.post("/api/agents/:id/circuit-breaker/reset", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        const principal = await requireDurableRole(
+          request,
+          ["admin"],
+          "Only an administrator may reset the safety stop",
+        );
+        const { reason } = breakerResetBody.parse(request.body);
+        return securityRuntime.controlledActions.resetSafetyStop({
+          agentId: id,
+          principal,
+          reason,
+        });
+      });
+
+      app.get("/api/graph/resources/:id/impact", async (request) => {
+        const { id } = resourceIdParams.parse(request.params);
+        return {
+          owners: await graph.ownersOfResource(id),
+          downstream: await graph.downstreamDependents(id),
+          inbound: await graph.inboundDependencies(id),
+          affectingAgents: await graph.agentsAffectingResource(id),
+          relatedRunIds: await graph.runsRelatedToResource(id),
+        };
+      });
+
+      app.get("/api/agents/:id/reachable-resources", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { resources: await graph.reachableResources(id) };
+      });
+
+      app.get("/api/agents/:agentId/path-to/:resourceId", async (request) => {
+        const { agentId, resourceId } = agentResourceParams.parse(request.params);
+        service.getAgent(agentId);
+        return { path: await graph.relevantAgentResourcePath(agentId, resourceId) };
+      });
+    }
   }
 
   app.patch("/api/agents/:id", async (request) => {
+    await requireDurableRole(
+      request,
+      ["operator", "admin"],
+      "Only an operator or administrator may update Agents",
+    );
     const { id } = agentIdParams.parse(request.params);
     const body = updateAgentBody.parse(request.body);
     return { agent: await service.updateAgent(id, body) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
+    await requireDurableRole(
+      request,
+      ["admin"],
+      "Only an administrator may delete Agents",
+    );
     const { id } = agentIdParams.parse(request.params);
     return service.deleteAgent(id);
   });
 
   app.post("/api/agents/:id/start", async (request) => {
+    await requireDurableRole(
+      request,
+      ["operator", "admin"],
+      "Only an operator or administrator may start Agents",
+    );
     const { id } = agentIdParams.parse(request.params);
     return { agent: await service.startAgent(id) };
   });
 
   app.post("/api/agents/:id/stop", async (request) => {
+    await requireDurableRole(
+      request,
+      ["operator", "admin"],
+      "Only an operator or administrator may stop Agents",
+    );
     const { id } = agentIdParams.parse(request.params);
     return { agent: await service.stopAgent(id) };
   });
@@ -366,9 +611,14 @@ export async function createApp(
   });
 
   app.post("/api/agents/:id/messages", async (request, reply) => {
+    await requireDurableRole(
+      request,
+      ["operator", "admin"],
+      "Only an operator or administrator may start Agent work",
+    );
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
-    const result = await service.sendMessage(id, body.content);
+    const result = await service.sendMessage(id, body.content, securityRuntime?.principal);
     return reply.code(202).send(result);
   });
 
@@ -376,6 +626,21 @@ export async function createApp(
     const { id } = runIdParams.parse(request.params);
     return { run: service.getRun(id) };
   });
+
+  if (runTimeline) {
+    app.get("/api/runs/:id/events", async (request) => {
+      const { id } = runIdParams.parse(request.params);
+      // Run lookup is the authorization boundary for the current demo API and
+      // prevents using this route to enumerate arbitrary weak Run references.
+      service.getRun(id);
+      return {
+        events: (await runTimeline.list(id))
+          .slice()
+          .sort((left, right) => left.sequence - right.sequence)
+          .map(projectRunEvent),
+      };
+    });
+  }
 
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));

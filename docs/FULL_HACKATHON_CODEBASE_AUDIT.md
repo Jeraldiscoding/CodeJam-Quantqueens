@@ -1,5 +1,12 @@
 # Full Hackathon Codebase Audit — Agent Middleware
 
+> **Historical before-state audit.** The findings and test counts below are a
+> snapshot of the earlier implementation; several cited gaps have since been
+> implemented. They remain here to preserve the original evidence trail. Use
+> [Architecture](ARCHITECTURE.md), [Current Weaknesses](CURRENT_WEAKNESSES.md),
+> and [Dependency Security Report](DEPENDENCY_SECURITY_REPORT.md) for the
+> current audited boundary and residual risk.
+
 Audit date: 2026-08-31  
 Audited branch: `policy-enforcement` at `e08f681`, including the uncommitted working-tree changes present at audit time  
 Scope: application code, middleware, persistence, runtime adapters, frontend, deployment files, documentation, tests, and live Docker Compose behavior

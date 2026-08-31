@@ -34,22 +34,26 @@ variable "allowed_web_cidr" {
   description = "CIDR allowed to access the web UI. This must be an explicit, restricted network."
   type        = string
   validation {
-    condition     = var.allowed_web_cidr != "0.0.0.0/0"
-    error_message = "allowed_web_cidr must not expose this code-execution POC to the entire Internet."
+    condition     = var.allowed_web_cidr != "0.0.0.0/0" && var.allowed_web_cidr != "::/0"
+    error_message = "allowed_web_cidr must not expose this code-execution POC to the entire Internet over IPv4 or IPv6."
   }
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR allowed to SSH to the ECS."
+  description = "Restricted CIDR allowed to SSH to the ECS."
   type        = string
+  validation {
+    condition     = var.allowed_ssh_cidr != "0.0.0.0/0" && var.allowed_ssh_cidr != "::/0"
+    error_message = "allowed_ssh_cidr must not expose SSH to the entire Internet over IPv4 or IPv6."
+  }
 }
 
 variable "repository_url" {
   description = "Public Git URL of this Starter Kit repository."
   type        = string
   validation {
-    condition     = startswith(var.repository_url, "https://")
-    error_message = "repository_url must be an HTTPS URL."
+    condition     = can(regex("^https://[A-Za-z0-9._~:/@%+,=-]+$", var.repository_url))
+    error_message = "repository_url must be an HTTPS Git URL without shell metacharacters."
   }
 }
 
@@ -57,6 +61,10 @@ variable "repository_ref" {
   description = "Git branch or tag deployed by cloud-init."
   type        = string
   default     = "main"
+  validation {
+    condition     = length(var.repository_ref) >= 1 && length(var.repository_ref) <= 180 && can(regex("^[A-Za-z0-9._/-]+$", var.repository_ref))
+    error_message = "repository_ref must be a 1-180 character branch or tag without shell metacharacters."
+  }
 }
 
 variable "ark_api_key" {

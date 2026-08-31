@@ -8,14 +8,22 @@ import type {
   PolicyDecisionRecord,
 } from "./policy-store.js";
 import type { Agent, AgentRun } from "./types.js";
+import type { ExecutionIdentityService } from "./execution-identity.js";
+import type { AuthenticatedPrincipal, ExecutionIdentity, RiskDecision, AuthorizationDecision } from "./security-types.js";
+import { appendRequiredRunEvent, type RunTimeline } from "./run-timeline.js";
 
 /** The subset of AgentService the gateway needs to prove Run ownership. */
 export interface RunAuthority {
   getRun(runId: string): AgentRun;
   getAgent(agentId: string): Agent;
+  beginProtectedAction?(runId: string): () => void;
+  beginAgentProtectedAction?(agentId: string): () => void;
+  assertProtectedActionMayExecute?(runId: string): void;
+  assertAgentProtectedActionMayExecute?(agentId: string): void;
 }
 
 export interface GrantedAction {
+  operationId: string;
   runId: string;
   agentId: string;
   agentNodeId: string;
@@ -32,9 +40,31 @@ export interface ResourceActionResult {
 }
 
 /**
+ * The protected adapter effect happened, but one of its downstream audit
+ * projections could not be finalized. Callers must never describe this as a
+ * pre-effect denial or assume the resource stayed unchanged.
+ */
+export class PostEffectFinalizationError extends Error {
+  readonly name = "PostEffectFinalizationError";
+
+  constructor(
+    readonly decision: PolicyDecisionRecord,
+    readonly result: ResourceActionResult,
+    readonly finalizationStage: "graph_audit" | "timeline",
+    cause: unknown,
+  ) {
+    super(
+      `The protected effect completed, but ${finalizationStage === "graph_audit" ? "graph audit" : "timeline"} finalization failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+  }
+}
+
+/**
  * Performs an action that policy has already authorized. An adapter is never
- * consulted before a decision is claimed, so it can assume it is allowed to
- * act and does not repeat any permission logic.
+ * consulted before a decision is claimed. Production adapters should still
+ * validate the claim at their own effect boundary when they share an
+ * authoritative store, as the managed SQLite adapter does.
  */
 export interface ResourceAdapter {
   execute(action: GrantedAction): Promise<ResourceActionResult>;
@@ -44,14 +74,18 @@ export type GatewayResponse =
   | {
       status: "executed";
       decision: PolicyDecisionRecord;
+      authorization?: AuthorizationDecision;
+      risk?: RiskDecision;
       result: ResourceActionResult;
     }
   | {
       status: "approval_required";
       decision: PolicyDecisionRecord;
+      authorization?: AuthorizationDecision;
+      risk?: RiskDecision;
       approvalRequest: ApprovalRequestRecord;
     }
-  | { status: "denied"; decision: PolicyDecisionRecord };
+  | { status: "denied"; decision: PolicyDecisionRecord; authorization?: AuthorizationDecision; risk?: RiskDecision };
 
 const capabilityKinds: Record<CapabilityRelation, ResourceActionResult["kind"]> = {
   CAN_READ: "read",
@@ -67,12 +101,12 @@ const activeRunStatuses = new Set<AgentRun["status"]>([
 ]);
 
 /**
- * The POC resource backend.
+ * Legacy in-memory adapter for narrow unit tests only.
  *
  * It deliberately performs simulated effects rather than touching real systems,
  * and CAN_USE mints a short-lived opaque handle instead of ever returning a
- * real secret value. The point of the demo is that the *decision* is real, not
- * that the side effect is.
+ * real secret value. Production wiring must pass an explicit real adapter;
+ * ResourceGateway intentionally has no simulated default.
  */
 export class DemoResourceAdapter implements ResourceAdapter {
   private readonly writeJournal = new Map<string, number>();
@@ -147,7 +181,9 @@ export class ResourceGateway {
     private readonly policy: PolicyService,
     private readonly graphStore: GraphStore,
     private readonly runs: RunAuthority,
-    private readonly adapter: ResourceAdapter = new DemoResourceAdapter(),
+    private readonly adapter: ResourceAdapter,
+    private readonly identities?: ExecutionIdentityService,
+    private readonly timeline?: RunTimeline,
   ) {}
 
   async request(input: {
@@ -156,33 +192,72 @@ export class ResourceGateway {
     capability: CapabilityRelation;
     targetNodeId: string;
     payload?: Record<string, unknown> | undefined;
-    actorPrincipalId: string;
+    actorPrincipalId?: string;
+    principal?: AuthenticatedPrincipal;
+    delegationId?: string;
   }): Promise<GatewayResponse> {
-    const { run, agent } = this.requireEligibleRun(input.runId);
-    const payload = input.payload ?? {};
+    const release = this.runs.beginProtectedAction?.(input.runId);
+    let releaseActor: (() => void) | undefined;
+    try {
+      const { run, agent: rootAgent } = this.requireEligibleRun(input.runId);
+      const identity = await this.resolveIdentity(input, run, rootAgent);
+      if (identity.actorAgentId !== run.agentId) {
+        releaseActor = this.runs.beginAgentProtectedAction?.(identity.actorAgentId);
+      }
+      const agent = this.runs.getAgent(identity.actorAgentId);
+      const payload = input.payload ?? {};
 
-    const request: ProtectedActionRequest = {
-      operationId: input.operationId,
-      runId: run.id,
-      agentId: agent.id,
-      capability: input.capability,
-      targetNodeId: input.targetNodeId,
-      payload,
-      actorPrincipalId: input.actorPrincipalId,
-    };
-    const evaluation = await this.policy.evaluate(request);
+      await this.appendRequestEvents(
+        identity,
+        agent,
+        input.operationId,
+        input.capability,
+        input.targetNodeId,
+      );
 
-    if (evaluation.decision.result === "DENY") {
-      return { status: "denied", decision: evaluation.decision };
-    }
-    if (evaluation.decision.result === "REVIEW_REQUIRED") {
-      return {
-        status: "approval_required",
-        decision: evaluation.decision,
-        approvalRequest: evaluation.approvalRequest!,
+      const request: ProtectedActionRequest = {
+        operationId: input.operationId,
+        runId: run.id,
+        agentId: identity.actorAgentId,
+        capability: input.capability,
+        targetNodeId: input.targetNodeId,
+        payload,
+        actorPrincipalId: identity.principal.id,
+        identity,
       };
+      let evaluation: Awaited<ReturnType<PolicyService["evaluate"]>>;
+      try {
+        evaluation = await this.policy.evaluate(request);
+      } catch (error) {
+        await this.appendPreEffectFailure(
+          identity,
+          agent,
+          input.operationId,
+          input.capability,
+          input.targetNodeId,
+          "POLICY_EVALUATION_FAILED",
+          error,
+        );
+        throw error;
+      }
+
+      if (evaluation.decision.result === "DENY") {
+        return { status: "denied", decision: evaluation.decision, ...(evaluation.authorization ? { authorization: evaluation.authorization } : {}), ...(evaluation.risk ? { risk: evaluation.risk } : {}) };
+      }
+      if (evaluation.decision.result === "REVIEW_REQUIRED") {
+        return {
+          status: "approval_required",
+          decision: evaluation.decision,
+          ...(evaluation.authorization ? { authorization: evaluation.authorization } : {}),
+          ...(evaluation.risk ? { risk: evaluation.risk } : {}),
+          approvalRequest: evaluation.approvalRequest!,
+        };
+      }
+      return this.execute(evaluation.decision, agent, payload, identity, evaluation.authorization, evaluation.risk);
+    } finally {
+      releaseActor?.();
+      release?.();
     }
-    return this.execute(evaluation.decision, agent, payload, input.actorPrincipalId);
   }
 
   /**
@@ -193,42 +268,204 @@ export class ResourceGateway {
     runId: string;
     decisionId: string;
     payload?: Record<string, unknown> | undefined;
-    actorPrincipalId: string;
+    actorPrincipalId?: string;
+    principal?: AuthenticatedPrincipal;
+    delegationId?: string;
   }): Promise<GatewayResponse> {
-    const { run, agent } = this.requireEligibleRun(input.runId);
-    const detail = await this.policy.getDecision(input.decisionId);
-    if (detail.decision.runId !== run.id) {
-      throw new HttpError(403, "This decision belongs to a different Run");
+    const release = this.runs.beginProtectedAction?.(input.runId);
+    let releaseActor: (() => void) | undefined;
+    try {
+      const { run, agent: rootAgent } = this.requireEligibleRun(input.runId);
+      const identity = await this.resolveIdentity(input, run, rootAgent);
+      if (identity.actorAgentId !== run.agentId) {
+        releaseActor = this.runs.beginAgentProtectedAction?.(identity.actorAgentId);
+      }
+      const agent = this.runs.getAgent(identity.actorAgentId);
+      const detail = await this.policy.getDecision(input.decisionId);
+      if (detail.decision.runId !== run.id) {
+        throw new HttpError(403, "This decision belongs to a different Run");
+      }
+      const authorization = this.identities ? await this.policy.getAuthorizationForDecision(detail.decision.id) : undefined;
+      const risk = this.identities ? await this.policy.getRiskForDecision(detail.decision.id) : undefined;
+      return this.execute(detail.decision, agent, input.payload ?? {}, identity, authorization ?? undefined, risk ?? undefined);
+    } finally {
+      releaseActor?.();
+      release?.();
     }
-    return this.execute(detail.decision, agent, input.payload ?? {}, input.actorPrincipalId);
   }
 
   private async execute(
     decision: PolicyDecisionRecord,
     agent: Agent,
     payload: Record<string, unknown>,
-    actorPrincipalId: string,
+    identity: ExecutionIdentity,
+    authorization?: AuthorizationDecision,
+    risk?: RiskDecision,
   ): Promise<GatewayResponse> {
-    const claimed = await this.policy.claimForExecution({
-      decisionId: decision.id,
-      agentId: agent.id,
-      actorPrincipalId,
-      payload,
-    });
-    const target = await this.graphStore.getNode(claimed.targetNodeId);
-    if (!target) throw new HttpError(404, "The protected resource no longer exists");
+    let claimed: PolicyDecisionRecord;
+    let target: GraphNode;
+    try {
+      this.runs.assertProtectedActionMayExecute?.(decision.runId);
+      this.runs.assertAgentProtectedActionMayExecute?.(identity.actorAgentId);
+      claimed = await this.policy.claimForExecution({
+        decisionId: decision.id,
+        agentId: agent.id,
+        actorPrincipalId: identity.principal.id,
+        actorRole: identity.principal.role,
+        delegationChainIds: identity.delegationChain.map((delegation) => delegation.id),
+        payload,
+      });
+      const resolvedTarget = await this.graphStore.getNode(claimed.targetNodeId);
+      if (!resolvedTarget) throw new HttpError(404, "The protected resource no longer exists");
+      target = resolvedTarget;
+    } catch (error) {
+      await this.appendPreEffectFailure(
+        identity,
+        agent,
+        decision.operationId,
+        decision.capabilityRelation,
+        decision.targetNodeId,
+        "EXECUTION_CLAIM_FAILED",
+        error,
+      );
+      throw error;
+    }
 
-    const result = await this.adapter.execute({
-      runId: claimed.runId,
-      agentId: agent.id,
-      agentNodeId: claimed.agentNodeId,
-      capability: claimed.capabilityRelation,
-      target,
-      payload,
-      decision: claimed,
-    });
-    await this.policy.recordSuccess(claimed);
-    return { status: "executed", decision: claimed, result };
+    let result: ResourceActionResult;
+    try {
+      result = await this.adapter.execute({
+        operationId: claimed.operationId,
+        runId: claimed.runId,
+        agentId: agent.id,
+        agentNodeId: claimed.agentNodeId,
+        capability: claimed.capabilityRelation,
+        target,
+        payload,
+        decision: claimed,
+      });
+    } catch (error) {
+      if (this.timeline) {
+        await this.timeline.append({
+          runId: claimed.runId,
+          type: "ACTION_FAILED",
+          actor: gatewayActor(identity, agent.name),
+          agentId: identity.actorAgentId,
+          action: { operation: claimed.operationId, capability: claimed.capabilityRelation },
+          resource: { resourceId: claimed.targetNodeId, label: target.label },
+          ...gatewayDelegation(identity),
+          outcome: "failed",
+          reasonCode: "ADAPTER_EFFECT_FAILED",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+      throw error;
+    }
+    const effectCompletedAt = new Date().toISOString();
+    let graphAuditFailure: unknown;
+    try {
+      await this.policy.recordSuccess(claimed);
+    } catch (error) {
+      graphAuditFailure = error;
+    }
+    if (this.timeline) {
+      try {
+        await appendRequiredRunEvent(this.timeline, {
+          id: `run-event:effect-completed:${claimed.id}`,
+          occurredAt: effectCompletedAt,
+          runId: claimed.runId,
+          type: "ACTION_COMPLETED",
+          actor: gatewayActor(identity, agent.name),
+          agentId: identity.actorAgentId,
+          action: { operation: claimed.operationId, capability: claimed.capabilityRelation },
+          resource: { resourceId: claimed.targetNodeId, label: target.label, kind: typeof target.metadata.kind === "string" ? target.metadata.kind : "resource" },
+          ...gatewayDelegation(identity),
+          outcome: "succeeded",
+          reasonCode: graphAuditFailure
+            ? "EFFECT_COMPLETED_GRAPH_AUDIT_PENDING"
+            : "ADAPTER_EFFECT_COMPLETED",
+          reason: graphAuditFailure
+            ? `${result.summary}; the protected effect completed, but its graph audit projection needs repair.`
+            : `${result.summary}; the protected effect completed after authorization and safety checks.`,
+          metadata: {
+            authorizationResult: authorization?.result ?? "ALLOW",
+            riskResult: risk?.result ?? "ALLOW",
+            approved: claimed.result === "REVIEW_REQUIRED",
+            blastRadius: readBlastRadius(risk, claimed),
+            adapterKind: target.metadata.adapterKind ?? "demo",
+            graphAuditFinalized: !graphAuditFailure,
+          },
+        });
+      } catch (error) {
+        throw new PostEffectFinalizationError(claimed, result, "timeline", error);
+      }
+    }
+    if (graphAuditFailure) {
+      throw new PostEffectFinalizationError(claimed, result, "graph_audit", graphAuditFailure);
+    }
+    return { status: "executed", decision: claimed, ...(authorization ? { authorization } : {}), ...(risk ? { risk } : {}), result };
+  }
+
+  private async resolveIdentity(
+    input: { runId: string; principal?: AuthenticatedPrincipal; delegationId?: string; actorPrincipalId?: string },
+    run: AgentRun,
+    agent: Agent,
+  ): Promise<ExecutionIdentity> {
+    if (this.identities) {
+      if (!input.principal) throw new HttpError(401, "A verified principal is required for protected actions");
+      return this.identities.resolve({ runId: input.runId, principal: input.principal, ...(input.delegationId ? { delegationId: input.delegationId } : {}) });
+    }
+    const principalId = input.actorPrincipalId ?? "principal:legacy";
+    return { principal: { id: principalId, kind: "system", displayName: principalId, role: "operator", authenticationSource: "system" }, runId: run.id, rootAgentId: agent.id, actorAgentId: agent.id, actorAgentNodeId: `agent:${agent.id}`, actorAgentDisplayName: agent.name, delegationChain: [] };
+  }
+
+  private async appendRequestEvents(
+    identity: ExecutionIdentity,
+    agent: Agent,
+    operationId: string,
+    capability: CapabilityRelation,
+    targetNodeId: string,
+  ): Promise<void> {
+    if (!this.timeline) return;
+    const target = await this.graphStore.getNode(targetNodeId);
+    const common = { runId: identity.runId, actor: gatewayActor(identity, agent.name), agentId: identity.actorAgentId, action: { operation: operationId, capability }, resource: { resourceId: targetNodeId, ...(target ? { label: target.label, kind: typeof target.metadata.kind === "string" ? target.metadata.kind : "resource" } : {}) }, ...gatewayDelegation(identity), outcome: "pending" as const, reasonCode: "PROTECTED_ACTION_REQUESTED", reason: "The Agent requested a protected resource action; no effect has happened yet." };
+    await this.timeline.append({ ...common, type: "ACTION_REQUESTED" });
+    await this.timeline.append({ ...common, type: "RESOURCE_ACCESS_ATTEMPTED" });
+  }
+
+  private async appendPreEffectFailure(
+    identity: ExecutionIdentity,
+    agent: Agent,
+    operationId: string,
+    capability: CapabilityRelation,
+    targetNodeId: string,
+    reasonCode: string,
+    error: unknown,
+  ): Promise<void> {
+    if (!this.timeline) return;
+    try {
+      const target = await this.graphStore.getNode(targetNodeId);
+      await this.timeline.append({
+        runId: identity.runId,
+        type: "ACTION_FAILED",
+        actor: gatewayActor(identity, agent.name),
+        agentId: identity.actorAgentId,
+        action: { operation: operationId, capability },
+        resource: {
+          resourceId: targetNodeId,
+          ...(target ? {
+            label: target.label,
+            kind: typeof target.metadata.kind === "string" ? target.metadata.kind : "resource",
+          } : {}),
+        },
+        ...gatewayDelegation(identity),
+        outcome: "failed",
+        reasonCode,
+        reason: `The protected action stopped before the adapter ran: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    } catch {
+      // Preserve the original fail-closed error. A broken audit store must not
+      // be converted into a different error or permit the protected effect.
+    }
   }
 
   private requireEligibleRun(runId: string): { run: AgentRun; agent: Agent } {
@@ -242,4 +479,38 @@ export class ResourceGateway {
     }
     return { run, agent };
   }
+}
+
+function gatewayActor(identity: ExecutionIdentity, actorDisplayName?: string) {
+  return {
+    principalId: `agent:${identity.actorAgentId}`,
+    kind: identity.delegation ? "delegated_agent" as const : "agent" as const,
+    ...(actorDisplayName ? { displayName: actorDisplayName } : {}),
+    originPrincipalId: identity.principal.id,
+    originDisplayName: identity.principal.displayName,
+    agentId: identity.actorAgentId,
+    ...(identity.delegation ? { parentAgentId: identity.delegation.parentAgentId } : {}),
+  };
+}
+
+function gatewayDelegation(identity: ExecutionIdentity) {
+  if (!identity.delegation) return {};
+  return {
+    delegation: {
+      delegationId: identity.delegation.id,
+      parentAgentId: identity.delegation.parentAgentId,
+      childAgentId: identity.delegation.childAgentId,
+      depth: identity.delegation.depth,
+      effectiveCapabilities: identity.delegation.effectiveScope.map(
+        (scope) => `${scope.capability}:${scope.targetNodeId}`,
+      ),
+    },
+  };
+}
+
+function readBlastRadius(risk: RiskDecision | undefined, decision: PolicyDecisionRecord): number {
+  const stored = decision.evidence.blastRadius;
+  if (typeof stored === "number" && Number.isSafeInteger(stored) && stored >= 0) return stored;
+  const expansion = risk?.factors.find((factor) => factor.code === "BLAST_RADIUS_EXPANSION");
+  return typeof expansion?.observed === "number" ? expansion.observed : 0;
 }

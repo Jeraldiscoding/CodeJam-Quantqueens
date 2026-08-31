@@ -69,6 +69,8 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  kind?: "codex" | "managed_action";
+  originPrincipalId?: string;
 }
 
 export interface Database {

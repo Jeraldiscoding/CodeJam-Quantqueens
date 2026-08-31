@@ -55,11 +55,21 @@ describe("MiddlewareDatabase", () => {
     expect(tables.map(({ name }) => name)).toEqual([
       "approval_events",
       "approval_requests",
+      "authorization_decisions",
+      "behavioral_baselines",
+      "circuit_breakers",
+      "delegations",
       "graph_edges",
       "graph_nodes",
       "graph_observations",
+      "identity_principals",
+      "managed_resource_action_receipts",
+      "managed_resource_state",
       "policy_action_claims",
       "policy_decisions",
+      "risk_decisions",
+      "run_event_sequences",
+      "run_events",
       "schema_migrations",
     ]);
 
@@ -73,14 +83,24 @@ describe("MiddlewareDatabase", () => {
     expect(indexes.map(({ name }) => name)).toEqual([
       "approval_events_request_idx",
       "approval_requests_status_idx",
+      "authorization_decisions_run_idx",
+      "behavioral_baselines_agent_idx",
+      "delegations_child_idx",
+      "delegations_parent_idx",
+      "delegations_run_idx",
       "graph_edges_run_idx",
       "graph_edges_source_idx",
       "graph_edges_target_idx",
       "graph_observations_agent_idx",
       "graph_observations_run_idx",
       "graph_observations_source_idx",
+      "managed_resource_action_receipts_resource_idx",
       "policy_decisions_agent_idx",
       "policy_decisions_run_idx",
+      "risk_decisions_run_idx",
+      "run_events_agent_idx",
+      "run_events_resource_idx",
+      "run_events_run_sequence_idx",
     ]);
 
     const applied = database.connection

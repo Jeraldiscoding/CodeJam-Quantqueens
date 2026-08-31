@@ -345,8 +345,11 @@ function assertEdgeShape(edge: GraphEdge, source: GraphNodeRow, target: GraphNod
     );
   }
   if (edge.relation === "OWNS") {
-    if (source.type !== "human" || target.type !== "agent") {
-      throw new MiddlewareStoreError("VALIDATION", "OWNS must connect a human to an Agent");
+    if (source.type !== "human" || (target.type !== "agent" && target.type !== "asset")) {
+      throw new MiddlewareStoreError(
+        "VALIDATION",
+        "OWNS must connect a human to an Agent or asset",
+      );
     }
     return;
   }

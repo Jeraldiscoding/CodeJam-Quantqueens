@@ -8,7 +8,11 @@ import {
 } from "./api";
 import { KnowledgeGraphPanel } from "./KnowledgeGraphPanel";
 import { OverallGraphPanel } from "./OverallGraphPanel";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import { RunTimeline } from "./RunTimeline";
+import { SecurityDemoPanel } from "./SecurityDemoPanel";
+import type { Agent, AgentRun, Message, RunTimelineItem, SystemInfo } from "./types";
+
+const RELEASE_GUARDIAN_ID = "d7b3a871-81e1-4965-9a88-bef875c3bb19";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -59,6 +63,7 @@ export default function App() {
   } | null>(null);
   const [analyzingPrompt, setAnalyzingPrompt] = useState(false);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [runEvents, setRunEvents] = useState<RunTimelineItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -113,6 +118,7 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setRunEvents([]);
     setPromptReview(null);
     setShowSettings(false);
     if (!selectedId) {
@@ -120,10 +126,14 @@ export default function App() {
       return;
     }
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+      .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
+        if (latest) {
+          const timeline = await api.runEvents(latest.id);
+          if (selectedIdRef.current === selectedId) setRunEvents(timeline.events);
+        }
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
@@ -202,7 +212,9 @@ export default function App() {
 
   const deleteAgent = async () => {
     if (!selected) return;
-    if (!window.confirm("Delete " + selected.name + "? Its workspace will be archived.")) {
+    if (!window.confirm(
+      `Delete ${selected.name}? Its workspace will be archived, while completed Run audit history is retained.`,
+    )) {
       return;
     }
     setBusy(true);
@@ -224,8 +236,12 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
+        const [result, timeline] = await Promise.all([
+          api.run(runId),
+          api.runEvents(runId),
+        ]);
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        if (selectedIdRef.current === agentId) setRunEvents(timeline.events);
         if (!["queued", "running"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -268,6 +284,7 @@ export default function App() {
       if (selectedIdRef.current === agent.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setRunEvents([]);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -327,6 +344,25 @@ export default function App() {
     await dispatchMessage(selected, content);
   };
 
+  const openSecurityRun = async (runId: string) => {
+    if (!selected) return;
+    setError(null);
+    try {
+      const [run, timeline] = await Promise.all([api.run(runId), api.runEvents(runId)]);
+      setActiveRun(run.run);
+      setRunEvents(timeline.events);
+      await refreshAgents();
+      window.requestAnimationFrame(() => {
+        document.getElementById("run-timeline-title")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
   const unlock = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
@@ -352,7 +388,7 @@ export default function App() {
       <main className="auth-screen">
         <section className="auth-card" aria-live="polite">
           <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <span className="eyebrow">QuantQueens</span>
           <h1>Connecting to the control plane</h1>
           {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
         </section>
@@ -365,7 +401,7 @@ export default function App() {
       <main className="auth-screen">
         <form className="auth-card" onSubmit={unlock}>
           <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
+          <span className="eyebrow">QuantQueens</span>
           <h1>Enter the access token</h1>
           <p>This shared demo token is configured by the platform operator.</p>
           {error && <div className="error-banner" role="alert">{error}</div>}
@@ -394,12 +430,8 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">A</div>
           <div>
-            <strong>Agent Launchpad</strong>
-            <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
-            </span>
+            <strong>QuantQueens</strong>
+            <span>Agent safety middleware</span>
           </div>
         </div>
 
@@ -452,16 +484,12 @@ export default function App() {
 
       <main className="main">
         {!system?.arkConfigured || !system?.codexAvailable ? (
-          <div className="config-banner">
-            <span>!</span>
+          <div className="config-banner config-banner-ready">
+            <span>i</span>
             <div>
-              <strong>Runtime configuration needed</strong>
+              <strong>Guided safety proof is ready</strong>
               <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                  : system.runtimeProvider === "container"
-                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
+                Protected actions below use the real middleware path now. Configure Codex only to use free-form chat.
               </p>
             </div>
           </div>
@@ -586,17 +614,27 @@ export default function App() {
               </button>
             </div>
 
-            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : workspaceView === "overall" ? <OverallGraphPanel /> : <section className="playground">
+            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : workspaceView === "overall" ? <OverallGraphPanel /> : <section className="playground playground-security-demo">
               <div className="playground-topbar">
                 <div>
-                  <span className="eyebrow">Playground</span>
-                  <h2>Build something with your Agent</h2>
+                  <span className="eyebrow">
+                    Live middleware proof
+                  </span>
+                  <h2>
+                    Verify a protected Agent action
+                  </h2>
                 </div>
                 <div className="session-info">
                   <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
+                  Protected action path
                 </div>
               </div>
+
+              <SecurityDemoPanel
+                agent={selected}
+                extendedDemo={selected.id === RELEASE_GUARDIAN_ID}
+                onOpenRun={openSecurityRun}
+              />
 
               <div className="messages">
                 {messages.length === 0 && !activeRun ? (
@@ -691,6 +729,7 @@ export default function App() {
                     <span>{activeRun.error}</span>
                   </article>
                 )}
+                <RunTimeline events={runEvents} />
                 <div ref={messageEnd} />
               </div>
 
@@ -783,7 +822,7 @@ export default function App() {
         ) : (
           <div className="no-agent">
             <div className="no-agent-art">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
+            <span className="eyebrow">QuantQueens</span>
             <h1>Your runtime is ready for an Agent.</h1>
             <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
             <button

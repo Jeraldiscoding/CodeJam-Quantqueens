@@ -148,6 +148,7 @@ fi
 export NODE_ENV=production
 export HOST="${HOST:-127.0.0.1}"
 export PORT="${PORT:-3000}"
+export SEED_DEMO_DATA="${SEED_DEMO_DATA:-true}"
 export CODEX_SANDBOX_MODE="$codex_sandbox_mode"
 export RUNTIME_PROVIDER=container
 export CONTAINER_ENGINE="$engine"

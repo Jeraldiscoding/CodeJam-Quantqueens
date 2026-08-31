@@ -84,6 +84,23 @@ export interface ClaimPolicyActionInput {
   requestHash: string;
   approvalEventId?: string;
   actorPrincipalId: string;
+  /**
+   * When present, the durable principal row is checked inside the same SQLite
+   * transaction that creates the one-time claim. This closes the gap between
+   * resolving an identity and committing its protected effect authority.
+   */
+  allowedPrincipalRoles?: Array<"viewer" | "operator" | "approver" | "admin">;
+  /**
+   * Optional optimistic guard for the Agent-scoped safety state used to make
+   * this decision. The governance adapter verifies it inside the same
+   * BEGIN IMMEDIATE transaction that creates the one-time execution claim.
+   * Callers that do not use the integrated safety runtime remain compatible.
+   */
+  breakerGuard?: {
+    scopeId: string;
+    expectedState: "NORMAL" | "WARN" | "TRIPPED";
+    expectedVersion: number;
+  };
 }
 
 export interface GovernanceStore {
@@ -97,5 +114,6 @@ export interface GovernanceStore {
   getApprovalEvents(approvalRequestId: string): Promise<ApprovalEventRecord[]>;
   resolveReview(input: ResolveReviewInput): Promise<ApprovalEventRecord>;
   claimForExecution(input: ClaimPolicyActionInput): Promise<PolicyActionClaim>;
+  rollbackExecutionClaim(decisionId: string, approvalEventId?: string): Promise<void>;
   getActionClaim(decisionId: string): Promise<PolicyActionClaim | null>;
 }

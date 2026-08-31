@@ -1,11 +1,18 @@
 # Knowledge Graph MVP Specification
 
+> **Historical design record.** This file captures the earlier graph MVP and
+> its then-current test evidence. It is not the current runtime contract. See
+> [Architecture](ARCHITECTURE.md), [Current Weaknesses](CURRENT_WEAKNESSES.md),
+> and [the repository agent contracts](../.ai/specs/architecture-contracts.md)
+> for the implemented managed-action gateway, timeline, ownership, adaptive
+> risk, delegation, and circuit-breaker boundary.
+
 For an educational walkthrough of the current implementation, the distinction
 between LLM output and deterministic relationship extraction, completed test
 evidence, and prioritized gaps, see the
 [Session Implementation Report](SESSION_IMPLEMENTATION_REPORT.md).
 
-Current hardening status (2026-08-31): the encoded-path authentication bypass
+MVP hardening status at the time of this record (2026-08-31): the encoded-path authentication bypass
 and cross-Agent observation contamination found by the full audit are fixed.
 Post-fix validation passes 17 test files and 82 tests. Learned observations are
 now filtered by their owning Agent in both exact-action and whole-Agent

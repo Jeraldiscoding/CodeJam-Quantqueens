@@ -234,8 +234,14 @@ export class GraphConfigurationService {
     relation: GraphEdgeRelation,
   ): Promise<void> {
     if (relation === "OWNS") {
-      if (source.type !== "human" || target.id !== agentNodeId) {
-        throw new HttpError(400, "OWNS must connect a human to the selected Agent");
+      if (source.type !== "human" || (target.id !== agentNodeId && target.type !== "asset")) {
+        throw new HttpError(400, "OWNS must connect a human to the selected Agent or asset");
+      }
+      if (target.type === "asset" && !(await this.reachableFrom(agentNodeId)).has(target.id)) {
+        throw new HttpError(
+          400,
+          "Resource ownership can only be configured for an asset already reachable by the selected Agent",
+        );
       }
       return;
     }

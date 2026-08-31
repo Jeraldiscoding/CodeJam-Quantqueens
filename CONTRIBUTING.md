@@ -6,7 +6,7 @@ hackathon.
 ## Setup
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 npm run dev
 ```
@@ -18,9 +18,14 @@ For container-based Agent execution, follow
 
 ```bash
 npm run check
+npm run test:e2e
 terraform fmt -check -recursive deploy/volcengine
-docker compose config
+docker compose config --quiet
 ```
+
+Install Chromium once with `npx playwright install chromium`. If an optional
+deployment tool such as Terraform is unavailable, call that check out in the
+handoff instead of implying it passed.
 
 ## Pull requests
 

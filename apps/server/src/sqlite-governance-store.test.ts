@@ -6,6 +6,7 @@ import { MiddlewareDatabase } from "./middleware-database.js";
 import type { PolicyDecisionRecord } from "./policy-store.js";
 import { SqliteGovernanceStore } from "./sqlite-governance-store.js";
 import { SqliteGraphStore } from "./sqlite-graph-store.js";
+import { SqliteSecurityStore } from "./sqlite-security-store.js";
 import type { GraphEdge, GraphNode } from "./graph-types.js";
 
 const createdAt = "2026-08-30T10:00:00.000Z";
@@ -228,6 +229,96 @@ describe("SqliteGovernanceStore", () => {
         actorPrincipalId: "gateway:protected-action",
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("checks the authoritative principal role inside the one-time claim transaction", async () => {
+    const stores = await createStores();
+    await seedPermission(stores.graph);
+    const security = new SqliteSecurityStore(stores.database);
+    const allowed = decision("ALLOW", { id: "decision:atomic-role", operationId: "operation:atomic-role" });
+    await stores.governance.recordEvaluation({ decision: allowed });
+
+    await security.upsertPrincipal({
+      id: "human:alice",
+      kind: "human",
+      displayName: "Alice",
+      role: "viewer",
+      authenticationSource: "bearer_token",
+    });
+    stores.setNow("2026-08-30T10:01:00.000Z");
+    await expect(stores.governance.claimForExecution({
+      decisionId: allowed.id,
+      operationId: allowed.operationId,
+      requestHash: allowed.requestHash,
+      actorPrincipalId: "human:alice",
+      allowedPrincipalRoles: ["operator", "admin"],
+    })).rejects.toMatchObject({
+      code: "INVALID_TRANSITION",
+      message: expect.stringMatching(/authoritative principal role/i),
+    });
+    expect(await stores.governance.getActionClaim(allowed.id)).toBeNull();
+
+    await security.upsertPrincipal({
+      id: "human:alice",
+      kind: "human",
+      displayName: "Alice",
+      role: "operator",
+      authenticationSource: "bearer_token",
+    });
+    await expect(stores.governance.claimForExecution({
+      decisionId: allowed.id,
+      operationId: allowed.operationId,
+      requestHash: allowed.requestHash,
+      actorPrincipalId: "human:alice",
+      allowedPrincipalRoles: ["operator", "admin"],
+    })).resolves.toMatchObject({ decisionId: allowed.id });
+  });
+
+  it("atomically refuses a claim when the Agent safety state changed after evaluation", async () => {
+    const first = await createStores();
+    await seedPermission(first.graph);
+    const allowed = decision("ALLOW", {
+      id: "decision:atomic-breaker",
+      operationId: "operation:atomic-breaker",
+    });
+    await first.governance.recordEvaluation({ decision: allowed });
+
+    const second = await createStores(first.database.filePath);
+    second.database.connection.prepare(`INSERT INTO circuit_breakers (
+      scope_type, scope_id, state, version, reason_code, explanation,
+      evidence_json, updated_at
+    ) VALUES ('agent', ?, 'TRIPPED', 1, 'CONCURRENT_RISK',
+      'Another action tripped the safety stop.', '{}', ?)`)
+      .run("11111111-1111-4111-8111-111111111111", "2026-08-30T10:00:30.000Z");
+
+    first.setNow("2026-08-30T10:01:00.000Z");
+    await expect(first.governance.claimForExecution({
+      decisionId: allowed.id,
+      operationId: allowed.operationId,
+      requestHash: allowed.requestHash,
+      actorPrincipalId: "gateway:protected-action",
+      breakerGuard: {
+        scopeId: "11111111-1111-4111-8111-111111111111",
+        expectedState: "NORMAL",
+        expectedVersion: 0,
+      },
+    })).rejects.toMatchObject({
+      code: "INVALID_TRANSITION",
+      message: expect.stringMatching(/changed after policy evaluation/i),
+    });
+    expect(await first.governance.getActionClaim(allowed.id)).toBeNull();
+
+    await expect(first.governance.claimForExecution({
+      decisionId: allowed.id,
+      operationId: allowed.operationId,
+      requestHash: allowed.requestHash,
+      actorPrincipalId: "gateway:protected-action",
+      breakerGuard: {
+        scopeId: "11111111-1111-4111-8111-111111111111",
+        expectedState: "TRIPPED",
+        expectedVersion: 1,
+      },
+    })).resolves.toMatchObject({ decisionId: allowed.id });
   });
 
   it("never allows denied, rejected, or expired decisions to be claimed", async () => {

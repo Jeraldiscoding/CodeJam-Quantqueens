@@ -1,5 +1,10 @@
 # Three-day hackathon guide
 
+> **Repository status:** this is the original participant-facing guide. The
+> current implementation has selected **Track B — The Bouncer**; use the
+> current [README](../README.md), [architecture](ARCHITECTURE.md), and
+> [acceptance criteria](../.ai/specs/acceptance-criteria.md) for verification.
+
 Teams receive a working Agent platform and build exactly one middleware track.
 Rebuilding the UI, control plane, local Runtime, or ECS setup is out of scope.
 
@@ -36,6 +41,7 @@ Required demo:
 - Allow the Agent to read User A's mock resource.
 - Deny access to User B's resource in the backend.
 - Record the human, Agent, action, resource, and decision.
+- Support a backend-enforced revocation, disable, or permission update.
 
 A login screen without server-side authorization does not qualify.
 

@@ -78,6 +78,16 @@ interface ClaimRow {
   claimed_at: string;
 }
 
+interface IdentityPrincipalRow {
+  role: "viewer" | "operator" | "approver" | "admin";
+  active: number;
+}
+
+interface CircuitBreakerGuardRow {
+  state: "NORMAL" | "WARN" | "TRIPPED";
+  version: number;
+}
+
 /** Durable policy decisions, human-review state, and single-use action claims. */
 export class SqliteGovernanceStore implements GovernanceStore {
   constructor(
@@ -279,6 +289,34 @@ export class SqliteGovernanceStore implements GovernanceStore {
     assertNonEmptyText(input.operationId, "Policy operation ID");
     assertRequestHash(input.requestHash);
     assertNonEmptyText(input.actorPrincipalId, "Claim actor principal ID");
+    if (input.allowedPrincipalRoles) {
+      if (input.allowedPrincipalRoles.length === 0) {
+        throw new MiddlewareStoreError(
+          "VALIDATION",
+          "A protected claim must allow at least one principal role",
+        );
+      }
+      for (const role of input.allowedPrincipalRoles) {
+        assertOneOf(role, ["viewer", "operator", "approver", "admin"] as const, "Allowed principal role");
+      }
+    }
+    if (input.breakerGuard) {
+      assertNonEmptyText(input.breakerGuard.scopeId, "Circuit-breaker guard scope ID");
+      assertOneOf(
+        input.breakerGuard.expectedState,
+        ["NORMAL", "WARN", "TRIPPED"] as const,
+        "Expected circuit-breaker state",
+      );
+      if (
+        !Number.isSafeInteger(input.breakerGuard.expectedVersion) ||
+        input.breakerGuard.expectedVersion < 0
+      ) {
+        throw new MiddlewareStoreError(
+          "VALIDATION",
+          "Expected circuit-breaker version must be a non-negative safe integer",
+        );
+      }
+    }
 
     return this.database.transaction(() => {
       const claimedAt = this.readClock("Claim timestamp");
@@ -314,6 +352,40 @@ export class SqliteGovernanceStore implements GovernanceStore {
           "INVALID_TRANSITION",
           `Policy decision ${row.id} expired before execution`,
         );
+      }
+
+      if (input.allowedPrincipalRoles) {
+        const principal = this.database.connection
+          .prepare("SELECT role, active FROM identity_principals WHERE id = ?")
+          .get(input.actorPrincipalId) as IdentityPrincipalRow | undefined;
+        if (
+          !principal ||
+          principal.active !== 1 ||
+          !input.allowedPrincipalRoles.includes(principal.role)
+        ) {
+          throw new MiddlewareStoreError(
+            "INVALID_TRANSITION",
+            "The authoritative principal role no longer allows this protected action",
+          );
+        }
+      }
+
+      if (input.breakerGuard) {
+        const current = this.database.connection
+          .prepare(`SELECT state, version FROM circuit_breakers
+            WHERE scope_type = 'agent' AND scope_id = ?`)
+          .get(input.breakerGuard.scopeId) as CircuitBreakerGuardRow | undefined;
+        const currentState = current?.state ?? "NORMAL";
+        const currentVersion = current?.version ?? 0;
+        if (
+          currentState !== input.breakerGuard.expectedState ||
+          currentVersion !== input.breakerGuard.expectedVersion
+        ) {
+          throw new MiddlewareStoreError(
+            "INVALID_TRANSITION",
+            `Circuit breaker for ${input.breakerGuard.scopeId} changed after policy evaluation`,
+          );
+        }
       }
 
       if (row.result === "REVIEW_REQUIRED") {
@@ -383,6 +455,41 @@ export class SqliteGovernanceStore implements GovernanceStore {
       .prepare("SELECT decision_id, claimed_at FROM policy_action_claims WHERE decision_id = ?")
       .get(decisionId) as ClaimRow | undefined;
     return row ? { decisionId: row.decision_id, claimedAt: row.claimed_at } : null;
+  }
+
+  async rollbackExecutionClaim(decisionId: string, approvalEventId?: string): Promise<void> {
+    assertNonEmptyText(decisionId, "Policy decision ID");
+    return this.database.transaction(() => {
+      const removed = this.database.connection
+        .prepare("DELETE FROM policy_action_claims WHERE decision_id = ?")
+        .run(decisionId);
+      if (removed.changes !== 1) {
+        throw new MiddlewareStoreError(
+          "INVALID_TRANSITION",
+          `Policy decision ${decisionId} has no execution claim to roll back`,
+        );
+      }
+      if (!approvalEventId) return;
+      const event = this.database.connection
+        .prepare("SELECT * FROM approval_events WHERE id = ? AND event_type = 'consumed'")
+        .get(approvalEventId) as ApprovalEventRow | undefined;
+      if (!event) {
+        throw new MiddlewareStoreError(
+          "INVALID_TRANSITION",
+          `Approval consumption event ${approvalEventId} was not found`,
+        );
+      }
+      const restored = this.database.connection.prepare(`UPDATE approval_requests
+        SET status='approved', updated_at=? WHERE id=? AND status='consumed'`)
+        .run(event.created_at, event.approval_request_id);
+      if (restored.changes !== 1) {
+        throw new MiddlewareStoreError(
+          "CONFLICT",
+          `Approval request ${event.approval_request_id} changed during claim rollback`,
+        );
+      }
+      this.database.connection.prepare("DELETE FROM approval_events WHERE id = ?").run(approvalEventId);
+    });
   }
 
   private validateDecision(input: RecordPolicyEvaluationInput): string {

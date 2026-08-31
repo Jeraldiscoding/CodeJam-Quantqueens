@@ -22,6 +22,27 @@ describe("DemoAgentGraphProvisioner", () => {
     await expect(store.getOutgoingEdges(`agent:${demoAgents.releaseGuardian.id}`)).resolves.toMatchObject([
       { relation: "CAN_CALL", targetId: "asset:release-api" },
       { relation: "CAN_WRITE", targetId: "asset:deployment-config" },
+      { relation: "CAN_WRITE", targetId: "asset:staging-config" },
+      { relation: "CAN_READ", targetId: "asset:alice-private-records" },
+    ]);
+    await expect(store.getNode("asset:alice-private-records")).resolves.toMatchObject({
+      metadata: { ownerId: "human:alice", adapterKind: "managed_state" },
+    });
+    await expect(store.getNode("asset:bob-private-records")).resolves.toMatchObject({
+      metadata: { ownerId: "human:bob", adapterKind: "managed_state" },
+    });
+    await expect(store.getIncomingEdges("asset:alice-private-records")).resolves.toEqual([
+      expect.objectContaining({
+        sourceId: "human:alice",
+        relation: "OWNS",
+      }),
+      expect.objectContaining({
+        sourceId: `agent:${demoAgents.releaseGuardian.id}`,
+        relation: "CAN_READ",
+      }),
+    ]);
+    await expect(store.getIncomingEdges("asset:bob-private-records")).resolves.toEqual([
+      expect.objectContaining({ sourceId: "human:bob", relation: "OWNS" }),
     ]);
   });
 
@@ -49,5 +70,35 @@ describe("DemoAgentGraphProvisioner", () => {
       score: 0,
       decision: "ALLOW",
     });
+  });
+
+  it("attaches an optional server-attested owner without granting a capability", async () => {
+    const store = new InMemoryGraphStore();
+    const provisioner = new DemoAgentGraphProvisioner(store, {
+      id: "human:alice",
+      label: "Alice",
+    });
+    const graph = new KnowledgeGraphService(store);
+
+    await provisioner.provisionAgent({ id: unconfiguredAgentId, name: "Owned Agent" });
+    await provisioner.provisionAgent({ id: unconfiguredAgentId, name: "Owned Agent" });
+    await new DemoAgentGraphProvisioner(store, {
+      id: "human:bob",
+      label: "Bob",
+    }).provisionAgent({ id: unconfiguredAgentId, name: "Owned Agent after restart" });
+
+    await expect(graph.ownersOfAgent(unconfiguredAgentId)).resolves.toMatchObject([
+      { id: "human:alice", type: "human" },
+    ]);
+    await expect(store.getNode("human:bob")).resolves.toBeNull();
+    await expect(graph.listCapabilities(unconfiguredAgentId)).resolves.toEqual([]);
+    await expect(store.getIncomingEdges(`agent:${unconfiguredAgentId}`)).resolves.toMatchObject([
+      {
+        sourceId: "human:alice",
+        relation: "OWNS",
+        status: "authorized",
+        metadata: { accountabilityOnly: true },
+      },
+    ]);
   });
 });

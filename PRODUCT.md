@@ -12,8 +12,11 @@ decision quickly and verify the path that produced it.
 
 ## Product Purpose
 
-Make an Agent's allowed actions and indirect impact visible, explainable, and
-auditable through a small Knowledge Graph.
+Govern protected Agent actions before they reach a resource. Server-attested
+identity, exact permission, graph-derived downstream impact, and trusted Run
+history produce an explainable decision; the gateway enforces it, records what
+actually happened, and feeds successful behavior into later decisions. The
+graph is an operational policy input, not the product by itself.
 
 ## Brand Personality
 

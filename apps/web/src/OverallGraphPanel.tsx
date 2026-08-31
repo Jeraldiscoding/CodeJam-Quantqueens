@@ -66,7 +66,9 @@ function positionNodes(nodes: GraphNode[]): PositionedNode[] {
 }
 
 function edgeClass(edge: NetworkEdge): string {
-  if (edge.observation) return "inference";
+  if (edge.observation) {
+    return edge.observation.state === "confirmed" ? "inference-confirmed" : "inference";
+  }
   if (edge.relation === "OWNS") return "ownership";
   if (edge.relation.startsWith("CAN_")) return "permission";
   if (edge.status !== "authorized") return "context";
@@ -78,20 +80,27 @@ export function OverallGraphPanel() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [refreshing, setRefreshing] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
+    setRefreshing(true);
     void api.wholeGraph()
       .then(({ graph }) => {
         if (cancelled) return;
         setCatalog(graph);
+        setLastUpdated(new Date());
         setSelectedNodeId((current) => current && graph.nodes.some(({ id }) => id === current)
           ? current
           : (graph.nodes[0]?.id ?? null));
       })
       .catch((reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Unable to load the network graph.");
+      })
+      .finally(() => {
+        if (!cancelled) setRefreshing(false);
       });
     return () => {
       cancelled = true;
@@ -108,7 +117,7 @@ export function OverallGraphPanel() {
       sourceId: observation.sourceNodeId,
       targetId: observation.targetNodeId,
       relation: observation.relation,
-      status: "actual" as const,
+      status: observation.state === "confirmed" ? "authorized" as const : "attempted" as const,
       ...(observation.runId ? { runId: observation.runId } : {}),
       metadata: {},
       createdAt: observation.createdAt,
@@ -118,6 +127,9 @@ export function OverallGraphPanel() {
   const visibleEdges = allEdges.filter(
     (edge) => nodesById.has(edge.sourceId) && nodesById.has(edge.targetId),
   );
+  const pendingObservations = (catalog?.observations ?? []).filter(
+    (observation) => observation.state === "observed",
+  ).length;
 
   if (!catalog && !error) {
     return <section className="graph-panel graph-panel-loading" aria-busy="true"><div className="graph-loading-copy"><span className="eyebrow">Network Graph</span><h2>Loading the shared topology</h2><p>Reading every stored identity, asset, data category, and relationship.</p></div><div className="graph-loading-field" /></section>;
@@ -131,14 +143,14 @@ export function OverallGraphPanel() {
   );
 
   return (
-    <section className="graph-panel" aria-labelledby="overall-graph-title">
+    <section className="graph-panel" aria-labelledby="overall-graph-title" aria-busy={refreshing}>
       <header className="graph-panel-header overall-graph-header">
-        <div><span className="eyebrow">Network Graph · Live</span><h2 id="overall-graph-title">Shared relationship map</h2><p>Solid lines are trusted configuration. Dashed lines are relationships learned from prompts and Agent replies, with evidence retained for review.</p></div>
-        <div className="overall-graph-counts" aria-label={`${nodes.length} nodes and ${visibleEdges.length} relationships`}><span>{nodes.length} nodes</span><span>{visibleEdges.length} relationships</span></div>
+        <div><span className="eyebrow">Workspace topology</span><h2 id="overall-graph-title">Network relationships</h2><p>Solid lines are configured access and dependencies. Dashed lines are activity-derived observations; pending items stay quarantined until a person confirms them.</p></div>
+        <div className="overall-graph-counts" aria-label={`${nodes.length} nodes, ${visibleEdges.length} relationships, and ${pendingObservations} pending observations`}><span>{nodes.length} nodes</span><span>{visibleEdges.length} relationships</span>{pendingObservations > 0 && <span className="overall-graph-pending">{pendingObservations} pending review</span>}</div>
       </header>
       <div className="graph-toolbar">
-        <div className="graph-legend"><span><i className="legend-node legend-agent" /> Agent</span><span><i className="legend-node legend-asset" /> Asset</span><span><i className="legend-line legend-permission" /> Access</span><span><i className="legend-line legend-impact" /> Confirmed dependency</span><span><i className="legend-line legend-inference" /> Learned relationship</span></div>
-        <button className="button button-ghost graph-refresh-button" onClick={() => setReloadToken((value) => value + 1)}>Refresh network</button>
+        <div className="graph-legend"><span><i className="legend-node legend-agent" /> Agent</span><span><i className="legend-node legend-asset" /> Asset</span><span><i className="legend-line legend-permission" /> Access</span><span><i className="legend-line legend-impact" /> Configured dependency</span><span><i className="legend-line legend-inference-confirmed" /> Confirmed observation</span><span><i className="legend-line legend-inference" /> Pending review</span></div>
+        <div className="graph-refresh-group"><span className="graph-refresh-status" role="status" aria-live="polite">{refreshing ? "Reading latest relationships…" : lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Not updated"}</span><button className="button button-ghost graph-refresh-button" disabled={refreshing} onClick={() => setReloadToken((value) => value + 1)}>{refreshing ? "Refreshing…" : "Refresh network"}</button></div>
       </div>
       <div className="graph-body">
         <div className="graph-canvas-wrap overall-graph-canvas">
@@ -159,7 +171,7 @@ export function OverallGraphPanel() {
             {nodes.map((node) => <g key={node.id} className={`graph-node graph-node-${node.tone} graph-interactive ${selected.id === node.id ? "selected" : ""}`} role="button" tabIndex={0} aria-label={`Inspect ${node.label}`} aria-pressed={selected.id === node.id} onClick={() => setSelectedNodeId(node.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedNodeId(node.id); } }}><circle cx={node.x} cy={node.y} r={radius[node.tone]} /><text className="graph-node-label" x={node.x} y={node.y + radius[node.tone] + 18} textAnchor="middle">{node.label}</text><title>{node.label}</title></g>)}
           </svg>
         </div>
-        <aside className="graph-inspector" aria-live="polite"><span className="eyebrow">Network node</span><div className="inspector-title"><span className={`inspector-dot inspector-${selected.tone}`} /><div><h3>{selected.label}</h3><span>{selected.type.replace("_", " ")}</span></div></div><p>{connectedEdges.length === 0 ? "No stored relationships connect to this node yet." : `${connectedEdges.length} stored relationship${connectedEdges.length === 1 ? "" : "s"} connect this node to the network.`}</p><dl><div><dt>Classification</dt><dd>{selected.classification}</dd></div><div><dt>Risk</dt><dd>{selected.riskWeight} points</dd></div></dl><div className="overall-edge-list">{connectedEdges.map((edge) => <div key={edge.id}><strong>{edge.relation}{edge.observation ? ` · ${Math.round(edge.observation.confidence * 100)}%` : ""}</strong><span>{edge.sourceId === selected.id ? `to ${nodesById.get(edge.targetId)?.label}` : `from ${nodesById.get(edge.sourceId)?.label}`}</span>{edge.observation && <small>{edge.observation.state} · “{edge.observation.evidence}”</small>}</div>)}</div></aside>
+        <aside className="graph-inspector" aria-live="polite"><span className="eyebrow">Selected node</span><div className="inspector-title"><span className={`inspector-dot inspector-${selected.tone}`} /><div><h3>{selected.label}</h3><span>{selected.type.replace("_", " ")}</span></div></div><p>{connectedEdges.length === 0 ? "No stored relationships connect to this node yet." : `${connectedEdges.length} stored relationship${connectedEdges.length === 1 ? "" : "s"} connect this node to the network.`}</p><dl><div><dt>Classification</dt><dd>{selected.classification}</dd></div><div><dt>Risk</dt><dd>{selected.riskWeight} points</dd></div></dl><div className="overall-edge-list">{connectedEdges.map((edge) => <div key={edge.id}><strong>{edge.relation}{edge.observation ? ` · ${Math.round(edge.observation.confidence * 100)}%` : ""}</strong><span>{edge.sourceId === selected.id ? `to ${nodesById.get(edge.targetId)?.label}` : `from ${nodesById.get(edge.sourceId)?.label}`}</span>{edge.observation && <small><b className={`observation-state observation-state-${edge.observation.state}`}>{edge.observation.state === "observed" ? "Pending review" : "Confirmed"}</b> “{edge.observation.evidence}”</small>}</div>)}</div></aside>
       </div>
     </section>
   );

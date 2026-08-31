@@ -47,6 +47,10 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function wasSafelyPrevented(run: AgentRun): boolean {
+  return run.status === "failed" && /blocked|denied|not permitted|permission|safety stop/i.test(run.error ?? "");
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -454,6 +458,8 @@ export default function App() {
             <button
               className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
               key={agent.id}
+              aria-label={`Open ${agent.name}`}
+              title={agent.name}
               onClick={() => setSelectedId(agent.id)}
             >
               <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
@@ -487,9 +493,9 @@ export default function App() {
           <div className="config-banner config-banner-ready">
             <span>i</span>
             <div>
-              <strong>Guided safety proof is ready</strong>
+              <strong>Protected actions are available</strong>
               <p>
-                Protected actions below use the real middleware path now. Configure Codex only to use free-form chat.
+                Managed resource controls still use the live middleware path. Configure Codex only for free-form Agent chat.
               </p>
             </div>
           </div>
@@ -618,15 +624,15 @@ export default function App() {
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">
-                    Live middleware proof
+                    Agent protection
                   </span>
                   <h2>
-                    Verify a protected Agent action
+                    Review and control resource actions
                   </h2>
                 </div>
                 <div className="session-info">
                   <span className="pulse" />
-                  Protected action path
+                  Middleware active
                 </div>
               </div>
 
@@ -724,9 +730,10 @@ export default function App() {
                   </article>
                 )}
                 {activeRun?.status === "failed" && (
-                  <article className="run-error">
-                    <strong>Run failed</strong>
+                  <article className={`run-error ${wasSafelyPrevented(activeRun) ? "run-prevented" : ""}`}>
+                    <strong>{wasSafelyPrevented(activeRun) ? "Action safely prevented" : "Run failed"}</strong>
                     <span>{activeRun.error}</span>
+                    {wasSafelyPrevented(activeRun) && <small>The application is working: middleware ended this Run before a protected effect could occur.</small>}
                   </article>
                 )}
                 <RunTimeline events={runEvents} />

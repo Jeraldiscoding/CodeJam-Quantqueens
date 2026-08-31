@@ -34,7 +34,7 @@ describe("knowledge observations", () => {
     ]);
   });
 
-  it("persists evidence, reuses nodes, affects downstream risk, and can be rejected", async () => {
+  it("quarantines pending evidence, reuses nodes, and only affects risk after confirmation", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-observation-test-"));
     directories.push(root);
     const database = new MiddlewareDatabase(path.join(root, "middleware.db"));
@@ -64,6 +64,8 @@ describe("knowledge observations", () => {
     expect((await graphStore.getAllEdges()).filter((edge) => edge.relation.startsWith("CAN_"))).toEqual([permission]);
 
     const graph = new KnowledgeGraphService(graphStore, 20, observationStore);
+    await expect(graph.calculateBlastRadius("test-agent")).resolves.toMatchObject({ score: 0 });
+    await learner.resolve("test-agent", learned[0]!.id, "confirmed");
     await expect(graph.calculateBlastRadius("test-agent")).resolves.toMatchObject({ score: 10 });
     await learner.resolve("test-agent", learned[0]!.id, "rejected");
     await expect(graph.calculateBlastRadius("test-agent")).resolves.toMatchObject({ score: 0 });
@@ -96,7 +98,7 @@ describe("knowledge observations", () => {
       });
     }
 
-    await learner.observeText({
+    const [observation] = await learner.observeText({
       agentId: "agent-a",
       runId: "run:agent-a",
       sourceKind: "prompt",
@@ -104,6 +106,9 @@ describe("knowledge observations", () => {
     });
 
     const graph = new KnowledgeGraphService(graphStore, 20, observationStore);
+    await expect(graph.calculateBlastRadius("agent-a")).resolves.toMatchObject({ score: 0 });
+    await expect(graph.calculateBlastRadius("agent-b")).resolves.toMatchObject({ score: 0 });
+    await learner.resolve("agent-a", observation!.id, "confirmed");
     await expect(graph.calculateBlastRadius("agent-a")).resolves.toMatchObject({ score: 10 });
     await expect(graph.calculateBlastRadius("agent-b")).resolves.toMatchObject({ score: 0 });
   });

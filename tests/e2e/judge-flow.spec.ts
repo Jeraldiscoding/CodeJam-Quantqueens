@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 test("a judge can verify identity, graph safety, real effect prevention, and persisted evidence", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   const managedStatuses: number[] = [];
   const managedBodies: Array<Record<string, unknown>> = [];
   page.on("request", (request) => {
@@ -35,14 +37,16 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
 
   await page.getByRole("tab", { name: "Playground" }).click();
 
-  await expect(page.getByText("Guided safety proof is ready")).toBeVisible();
-  await expect(page.getByText(/Protected actions below use the real middleware path now/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Verify a protected Agent action" })).toBeVisible();
-  await expect(page.getByText("Track B · The Bouncer")).toBeVisible();
-  await expect(page.getByText(/Alice created Alice Boundary Judge/)).toBeVisible();
+  await expect(page.getByText("Protected actions are available")).toBeVisible();
+  await expect(page.getByText(/Managed resource controls still use the live middleware path/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review and control resource actions" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Protected action center" })).toBeVisible();
+  await expect(page.getByText(/Follow the two steps to give Alice Boundary Judge one exact permission/)).toBeVisible();
+  await expect(page.getByText("Grant one exact resource permission")).toBeVisible();
+  await expect(page.getByLabel(/Step 1: Grant exact access, not complete/)).toHaveAttribute("aria-current", "step");
 
-  const grantButton = page.getByRole("button", { name: "1. Grant Alice-only read" });
-  const boundaryButton = page.getByRole("button", { name: "2. Prove Alice/Bob boundary" });
+  const grantButton = page.getByRole("button", { name: "Grant private-record access" });
+  const boundaryButton = page.getByRole("button", { name: "Verify resource boundary" });
   await expect(boundaryButton).toBeDisabled();
   await page.keyboard.press("Tab");
   await expect(grantButton).toBeFocused();
@@ -58,8 +62,11 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
     response.request().method() === "POST");
   await grantButton.click();
   expect((await grantResponsePromise).status()).toBe(201);
-  await expect(page.getByRole("button", { name: "1. Alice-only permission ready" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Private-record access active" })).toBeDisabled();
   await expect(boundaryButton).toBeEnabled();
+  await expect(page.getByLabel(/Step 1: Grant exact access, complete/)).toContainText("Complete");
+  await expect(page.getByText("Verify the identity boundary")).toBeVisible();
+  await expect(page.getByLabel(/Step 2: Verify identity boundary, not complete/)).toHaveAttribute("aria-current", "step");
 
   const createdGraphResponse = await page.request.get(`/api/agents/${createdAgent.id}/graph`);
   expect(createdGraphResponse.status()).toBe(200);
@@ -91,7 +98,7 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   const createdDeniedBody = await (await createdDeniedResponsePromise).json() as {
     run: { id: string };
   };
-  const boundaryProof = page.getByLabel("Track B permission boundary proof");
+  const boundaryProof = page.getByLabel("Resource permission boundary");
   await expect(boundaryProof).toContainText("Alice's private records");
   await expect(boundaryProof).toContainText("Read completed through the protected adapter");
   await expect(boundaryProof).toContainText("Bob's private records");
@@ -99,6 +106,8 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await expect(page.getByLabel("Permission decision")).toContainText("Denied");
   await expect(page.getByLabel("Safety decision")).toContainText("Not needed");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
+  await expect(page.getByText("Access denied before the resource")).toBeVisible();
+  await expect(page.getByText(/This denied Run cannot be bypassed/)).toBeVisible();
   expect(managedStatuses.slice(0, 2)).toEqual([200, 403]);
   expect(managedBodies[0]).toMatchObject({
     capability: "CAN_READ",
@@ -132,8 +141,33 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   });
 
   await boundaryProof.getByRole("button", { name: "Inspect denied Run" }).click();
-  await expect(page.getByRole("heading", { name: "What happened" })).toBeVisible();
+  const deniedTimeline = page.locator(".run-timeline");
+  await expect(deniedTimeline.getByRole("heading", { name: "What happened" })).toBeVisible();
   await expect(page.getByText(/was not permitted to read Bob's private records/i)).toBeVisible();
+  const deniedTimelineLayout = await deniedTimeline.evaluate((element) => {
+    const messages = element.closest(".messages");
+    const composer = document.querySelector(".composer");
+    if (!messages || !composer) throw new Error("Expected the timeline, messages, and composer layout");
+    const timelineRect = element.getBoundingClientRect();
+    const messagesRect = messages.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    return {
+      timelineBottom: timelineRect.bottom,
+      messagesBottom: messagesRect.bottom,
+      composerTop: composerRect.top,
+      messagesClientHeight: messages.clientHeight,
+      messagesScrollHeight: messages.scrollHeight,
+    };
+  });
+  expect(deniedTimelineLayout.timelineBottom).toBeLessThanOrEqual(
+    deniedTimelineLayout.messagesBottom + 1,
+  );
+  expect(deniedTimelineLayout.messagesBottom).toBeLessThanOrEqual(
+    deniedTimelineLayout.composerTop + 1,
+  );
+  expect(deniedTimelineLayout.messagesScrollHeight).toBeLessThanOrEqual(
+    deniedTimelineLayout.messagesClientHeight + 1,
+  );
 
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.locator(".status")).toContainText("stopped");
@@ -158,32 +192,36 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await releaseGuardian.click();
   await expect(page.getByRole("heading", { name: "Release Guardian", level: 1 })).toBeVisible();
   await page.getByRole("tab", { name: "Playground" }).click();
-  await expect(page.getByRole("button", { name: "1. Alice-only permission ready" })).toBeDisabled();
-  const seededBoundaryButton = page.getByRole("button", { name: "2. Prove Alice/Bob boundary" });
+  await expect(page.getByRole("button", { name: "Private-record access active" })).toBeDisabled();
+  const seededBoundaryButton = page.getByRole("button", { name: "Verify resource boundary" });
   await seededBoundaryButton.click();
-  await expect(page.getByRole("button", { name: "3. Teach normal staging work" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Build trusted baseline" })).toBeEnabled();
   expect(managedStatuses.slice(2, 4)).toEqual([200, 403]);
 
-  await page.getByRole("button", { name: "3. Teach normal staging work" }).click();
-  await expect(page.getByRole("button", { name: "3. Normal staging learned" })).toBeDisabled();
+  await page.getByRole("button", { name: "Build trusted baseline" }).click();
+  await expect(page.getByRole("button", { name: "Staging baseline ready" })).toBeDisabled();
   await expect(page.getByLabel("Permission decision")).toContainText("Allowed");
   await expect(page.getByLabel("Safety decision")).toContainText("Allowed");
   await expect(page.getByLabel("Resource effect")).toContainText("Completed");
-  await expect(page.getByText("A staging pattern is ready for comparison")).toBeVisible();
+  await expect(page.getByText(/Baseline ready · minimum 3 required/)).toBeVisible();
 
-  await page.getByRole("button", { name: "4. Try broader production change" }).click();
+  await page.getByRole("button", { name: "Request production update" }).click();
   await expect(page.getByLabel("Permission decision")).toContainText("Allowed");
   await expect(page.getByLabel("Safety decision")).toContainText("Blocked");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
-  await expect(page.getByLabel("Safety stop active")).toBeVisible();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
+  await expect(page.getByText("Review the blocked action before continuing")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Change Deployment configuration" })).toBeVisible();
+  await expect(page.getByText("Action safely prevented").first()).toBeVisible();
+  await expect(page.getByText(/repeating the same risky request can trip it again/i)).toBeVisible();
   const impact = page.locator(".security-impact-list");
   await expect(impact).toContainText("Deployment configuration");
   await expect(impact).toContainText("Production service");
   await expect(impact).toContainText("Customer dataset");
   await expect(page.getByLabel("Relevant impact path")).toContainText("Customer dataset");
-  await expect(page.getByLabel("Persisted safety proof")).toContainText("Effect never claimed");
+  await expect(page.getByLabel("Persisted decision record")).toContainText("Effect never claimed");
 
-  await page.getByRole("button", { name: "View persistent Run timeline" }).click();
+  await page.getByRole("button", { name: "Review audit timeline" }).click();
   const timeline = page.locator(".run-timeline");
   await expect(timeline).toContainText(/was allowed to (change|write)/i);
   await expect(timeline).toContainText(/safety check blocked/i);
@@ -201,18 +239,154 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
     await releaseGuardian.click();
   }
   await page.getByRole("tab", { name: "Playground" }).click();
-  await expect(page.getByLabel("Safety stop active")).toBeVisible();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
   await expect(page.getByLabel("Safety decision")).toContainText("Blocked");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
   await expect(page.getByRole("heading", { name: "What happened" })).toBeVisible();
+  await expect(page.getByText("Action safely prevented").last()).toBeVisible();
   const afterReload = await page.locator(".run-timeline-sequence").evaluateAll((nodes) =>
     nodes.map((node) => Number(node.textContent)),
   );
   expect(afterReload).toEqual(beforeReload);
 
+  const resetResponsePromise = page.waitForResponse((response) =>
+    response.url().endsWith("/circuit-breaker/reset") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Reset safety stop" }).click();
+  expect((await resetResponsePromise).status()).toBe(200);
+  await expect(page.getByLabel("Protection status: ready")).toBeVisible();
+  await expect(page.getByText("Safety stop cleared. New actions can be evaluated again")).toBeVisible();
+  await expect(page.getByText("Safety stop cleared; previous action not approved")).toBeVisible();
+  const retryProductionButton = page.getByRole("button", { name: "Request production update" });
+  await expect(retryProductionButton).toBeEnabled();
+
+  await retryProductionButton.click();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
+  await expect(page.getByText(/repeating the same risky request can trip it again/i)).toBeVisible();
+
   await page.getByRole("tab", { name: "Impact map" }).click();
-  await expect(page.getByRole("heading", { name: "Impact field" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Impact map" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Select Customer dataset/ })).toBeVisible();
   await page.getByRole("button", { name: /Focus path to Customer dataset/ }).click();
   await expect(page.getByText(/Focused because you selected Customer dataset/)).toBeVisible();
+
+  // The shared Network Graph must fetch the latest server state on demand,
+  // rather than leaving the user with the first response rendered on mount.
+  await page.getByRole("tab", { name: "Network graph" }).click();
+  await expect(page.getByRole("heading", { name: "Network relationships" })).toBeVisible();
+  const refreshedNodeLabel = "Refresh verification queue";
+  await expect(page.getByRole("button", { name: `Inspect ${refreshedNodeLabel}` })).toHaveCount(0);
+  const createNodeResponse = await page.request.post("/api/graph/nodes", {
+    data: { type: "asset", label: refreshedNodeLabel, classification: "internal" },
+  });
+  expect(createNodeResponse.status()).toBe(201);
+  const refreshResponsePromise = page.waitForResponse((response) =>
+    response.url().endsWith("/api/graph") && response.request().method() === "GET");
+  await page.getByRole("button", { name: "Refresh network" }).click();
+  const refreshResponse = await refreshResponsePromise;
+  expect(refreshResponse.status()).toBe(200);
+  expect(await refreshResponse.request().headerValue("cache-control")).toBe("no-cache");
+  await expect(page.getByRole("button", { name: `Inspect ${refreshedNodeLabel}` })).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Updated");
+  expect(pageErrors).toEqual([]);
+});
+
+test("activity-derived relationships stay quarantined until a human confirms them", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  const agentResponse = await page.request.post("/api/agents", {
+    data: {
+      name: "Observation Reviewer",
+      description: "Reviews activity-derived network context",
+      instructions: "Do not infer authority from text.",
+    },
+  });
+  expect(agentResponse.status()).toBe(201);
+  const agent = (await agentResponse.json()).agent as { id: string };
+
+  const assetResponse = await page.request.post("/api/graph/nodes", {
+    data: { type: "asset", label: "Checkout API", classification: "public" },
+  });
+  expect(assetResponse.status()).toBe(201);
+  const asset = (await assetResponse.json()).node as { id: string };
+  const permissionResponse = await page.request.post(
+    `/api/agents/${agent.id}/graph/relationships`,
+    { data: { sourceId: `agent:${agent.id}`, targetId: asset.id, relation: "CAN_CALL" } },
+  );
+  expect(permissionResponse.status()).toBe(201);
+
+  const messageResponse = await page.request.post(`/api/agents/${agent.id}/messages`, {
+    data: { content: "Checkout API reads from Orders database." },
+  });
+  expect(messageResponse.status()).toBe(202);
+
+  await expect.poll(async () => {
+    const response = await page.request.get(`/api/agents/${agent.id}/observations`);
+    return ((await response.json()).observations as unknown[]).length;
+  }).toBe(1);
+
+  const pendingGraphResponse = await page.request.get(`/api/agents/${agent.id}/graph`);
+  expect((await pendingGraphResponse.json()).graph.observationEdges).toHaveLength(0);
+  const pendingRiskResponse = await page.request.get(`/api/agents/${agent.id}/blast-radius`);
+  expect((await pendingRiskResponse.json()).blastRadius.score).toBe(0);
+
+  await page.goto("/");
+  await page.locator("aside").getByRole("button", { name: /Observation Reviewer/ }).click();
+  await page.getByRole("tab", { name: "Impact map" }).click();
+  await expect(page.getByRole("heading", { name: "Relationship observations" })).toBeVisible();
+  const observation = page.locator(".knowledge-observation").filter({ hasText: "Checkout API" });
+  await expect(observation).toContainText("Pending · quarantined");
+  await expect(page.getByLabel(/Blast Radius 0 out of 20/)).toBeVisible();
+
+  const confirmResponsePromise = page.waitForResponse((response) =>
+    response.url().includes(`/api/agents/${agent.id}/observations/`) &&
+    response.url().endsWith("/confirm") && response.request().method() === "POST");
+  await observation.getByRole("button", { name: "Confirm relationship" }).click();
+  expect((await confirmResponsePromise).status()).toBe(200);
+  await expect(observation).toContainText("Confirmed for risk");
+
+  const confirmedGraphResponse = await page.request.get(`/api/agents/${agent.id}/graph`);
+  expect((await confirmedGraphResponse.json()).graph.observationEdges).toHaveLength(1);
+  const confirmedRiskResponse = await page.request.get(`/api/agents/${agent.id}/blast-radius`);
+  expect((await confirmedRiskResponse.json()).blastRadius.score).toBeGreaterThan(0);
+
+  const rejectResponsePromise = page.waitForResponse((response) =>
+    response.url().includes(`/api/agents/${agent.id}/observations/`) &&
+    response.url().endsWith("/reject") && response.request().method() === "POST");
+  await observation.getByRole("button", { name: "Reject" }).click();
+  expect((await rejectResponsePromise).status()).toBe(200);
+  await expect(observation).toHaveCount(0);
+  const rejectedRiskResponse = await page.request.get(`/api/agents/${agent.id}/blast-radius`);
+  expect((await rejectedRiskResponse.json()).blastRadius.score).toBe(0);
+  expect(pageErrors).toEqual([]);
+});
+
+test("final operator surfaces remain aligned at a narrow viewport", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await page.locator("aside").getByRole("button", { name: /Open Release Guardian/ }).click();
+
+  const expectNoHorizontalOverflow = async () => {
+    const dimensions = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
+  };
+
+  await page.getByRole("tab", { name: "Playground" }).click();
+  await expect(page.getByRole("heading", { name: "Protected action center" })).toBeVisible();
+  await expect(page.locator(".security-action")).toHaveCount(4);
+  await expectNoHorizontalOverflow();
+
+  await page.getByRole("tab", { name: "Impact map" }).click();
+  await expect(page.getByRole("heading", { name: "Impact map" })).toBeVisible();
+  await expectNoHorizontalOverflow();
+
+  await page.getByRole("tab", { name: "Network graph" }).click();
+  await expect(page.getByRole("heading", { name: "Network relationships" })).toBeVisible();
+  await expectNoHorizontalOverflow();
+  expect(pageErrors).toEqual([]);
 });

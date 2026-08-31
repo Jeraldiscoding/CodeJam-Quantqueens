@@ -95,9 +95,12 @@ confirmed by an operator. Deterministic text extraction may create resource
 nodes and learned dependency observations, but never authority.
 
 Blast Radius starts from an Agent's direct capability and follows trusted
-topology plus that Agent's non-rejected observations. SQLite observation
-queries filter by both Agent and source node, so an observation learned by one
-Agent cannot enter another Agent's traversal through a shared asset.
+topology plus that Agent's **confirmed** observations. Pending prompt/reply
+observations remain visible in the review catalog but are quarantined from
+enforcement until a human confirms them; rejected observations are excluded.
+SQLite observation queries filter by both Agent and source node, so an
+observation learned by one Agent cannot enter another Agent's traversal through
+a shared asset.
 
 ### Identity, policy, and approval
 

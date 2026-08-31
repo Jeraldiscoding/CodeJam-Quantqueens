@@ -47,6 +47,10 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function wasSafelyPrevented(run: AgentRun): boolean {
+  return run.status === "failed" && /blocked|denied|not permitted|permission|safety stop/i.test(run.error ?? "");
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -726,9 +730,10 @@ export default function App() {
                   </article>
                 )}
                 {activeRun?.status === "failed" && (
-                  <article className="run-error">
-                    <strong>Run failed</strong>
+                  <article className={`run-error ${wasSafelyPrevented(activeRun) ? "run-prevented" : ""}`}>
+                    <strong>{wasSafelyPrevented(activeRun) ? "Action safely prevented" : "Run failed"}</strong>
                     <span>{activeRun.error}</span>
+                    {wasSafelyPrevented(activeRun) && <small>The application is working: middleware ended this Run before a protected effect could occur.</small>}
                   </article>
                 )}
                 <RunTimeline events={runEvents} />

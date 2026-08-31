@@ -41,7 +41,9 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await expect(page.getByText(/Managed resource controls still use the live middleware path/)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review and control resource actions" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Protected action center" })).toBeVisible();
-  await expect(page.getByText(/Configure Alice Boundary Judge's exact access/)).toBeVisible();
+  await expect(page.getByText(/Follow the two steps to give Alice Boundary Judge one exact permission/)).toBeVisible();
+  await expect(page.getByText("Grant one exact resource permission")).toBeVisible();
+  await expect(page.getByLabel(/Step 1: Grant exact access, not complete/)).toHaveAttribute("aria-current", "step");
 
   const grantButton = page.getByRole("button", { name: "Grant private-record access" });
   const boundaryButton = page.getByRole("button", { name: "Verify resource boundary" });
@@ -62,6 +64,9 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   expect((await grantResponsePromise).status()).toBe(201);
   await expect(page.getByRole("button", { name: "Private-record access active" })).toBeDisabled();
   await expect(boundaryButton).toBeEnabled();
+  await expect(page.getByLabel(/Step 1: Grant exact access, complete/)).toContainText("Complete");
+  await expect(page.getByText("Verify the identity boundary")).toBeVisible();
+  await expect(page.getByLabel(/Step 2: Verify identity boundary, not complete/)).toHaveAttribute("aria-current", "step");
 
   const createdGraphResponse = await page.request.get(`/api/agents/${createdAgent.id}/graph`);
   expect(createdGraphResponse.status()).toBe(200);
@@ -101,6 +106,8 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await expect(page.getByLabel("Permission decision")).toContainText("Denied");
   await expect(page.getByLabel("Safety decision")).toContainText("Not needed");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
+  await expect(page.getByText("Access denied before the resource")).toBeVisible();
+  await expect(page.getByText(/This denied Run cannot be bypassed/)).toBeVisible();
   expect(managedStatuses.slice(0, 2)).toEqual([200, 403]);
   expect(managedBodies[0]).toMatchObject({
     capability: "CAN_READ",
@@ -196,13 +203,17 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await expect(page.getByLabel("Permission decision")).toContainText("Allowed");
   await expect(page.getByLabel("Safety decision")).toContainText("Allowed");
   await expect(page.getByLabel("Resource effect")).toContainText("Completed");
-  await expect(page.getByText("A staging pattern is ready for comparison")).toBeVisible();
+  await expect(page.getByText(/Baseline ready · minimum 3 required/)).toBeVisible();
 
   await page.getByRole("button", { name: "Request production update" }).click();
   await expect(page.getByLabel("Permission decision")).toContainText("Allowed");
   await expect(page.getByLabel("Safety decision")).toContainText("Blocked");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
-  await expect(page.getByLabel("Protection status: action blocked")).toBeVisible();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
+  await expect(page.getByText("Review the blocked action before continuing")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Change Deployment configuration" })).toBeVisible();
+  await expect(page.getByText("Action safely prevented").first()).toBeVisible();
+  await expect(page.getByText(/repeating the same risky request can trip it again/i)).toBeVisible();
   const impact = page.locator(".security-impact-list");
   await expect(impact).toContainText("Deployment configuration");
   await expect(impact).toContainText("Production service");
@@ -210,7 +221,7 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
   await expect(page.getByLabel("Relevant impact path")).toContainText("Customer dataset");
   await expect(page.getByLabel("Persisted decision record")).toContainText("Effect never claimed");
 
-  await page.getByRole("button", { name: "Open audit timeline" }).click();
+  await page.getByRole("button", { name: "Review audit timeline" }).click();
   const timeline = page.locator(".run-timeline");
   await expect(timeline).toContainText(/was allowed to (change|write)/i);
   await expect(timeline).toContainText(/safety check blocked/i);
@@ -228,14 +239,29 @@ test("a judge can verify identity, graph safety, real effect prevention, and per
     await releaseGuardian.click();
   }
   await page.getByRole("tab", { name: "Playground" }).click();
-  await expect(page.getByLabel("Protection status: action blocked")).toBeVisible();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
   await expect(page.getByLabel("Safety decision")).toContainText("Blocked");
   await expect(page.getByLabel("Resource effect")).toContainText("Prevented");
   await expect(page.getByRole("heading", { name: "What happened" })).toBeVisible();
+  await expect(page.getByText("Action safely prevented").last()).toBeVisible();
   const afterReload = await page.locator(".run-timeline-sequence").evaluateAll((nodes) =>
     nodes.map((node) => Number(node.textContent)),
   );
   expect(afterReload).toEqual(beforeReload);
+
+  const resetResponsePromise = page.waitForResponse((response) =>
+    response.url().endsWith("/circuit-breaker/reset") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Reset safety stop" }).click();
+  expect((await resetResponsePromise).status()).toBe(200);
+  await expect(page.getByLabel("Protection status: ready")).toBeVisible();
+  await expect(page.getByText("Safety stop cleared. New actions can be evaluated again")).toBeVisible();
+  await expect(page.getByText("Safety stop cleared; previous action not approved")).toBeVisible();
+  const retryProductionButton = page.getByRole("button", { name: "Request production update" });
+  await expect(retryProductionButton).toBeEnabled();
+
+  await retryProductionButton.click();
+  await expect(page.getByLabel("Protection status: safety stop active")).toBeVisible();
+  await expect(page.getByText(/repeating the same risky request can trip it again/i)).toBeVisible();
 
   await page.getByRole("tab", { name: "Impact map" }).click();
   await expect(page.getByRole("heading", { name: "Impact map" })).toBeVisible();

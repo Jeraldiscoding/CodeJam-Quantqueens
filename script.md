@@ -158,7 +158,7 @@ Expected evidence:
 - Create a fresh Agent for the Alice/Bob proof; do not reuse a previously
   authorized Agent.
 - If **Release Guardian** is stopped, select it and click **Start**.
-- If **Release Guardian** shows **Action blocked**, select **Reset safety
+- If **Release Guardian** shows **Safety stop active**, select **Reset safety
   stop** before beginning its extended scenario.
 - If Release Guardian has a pending review/approval Run, resolve or reject that
   Run before presenting. Using fresh state is safer than repairing ambiguous
@@ -254,7 +254,7 @@ the customer-data impact. Say:
 
 ### 2:40–3:00 — Close on enforcement
 
-Click **Open audit timeline** and point to the separate authorization, safety,
+Click **Review audit timeline** and point to the separate authorization, safety,
 breaker, and effect events. Say:
 
 > “The normal action executed, the cross-user action was denied, and an
@@ -283,7 +283,7 @@ Use this version when time is extremely limited.
    update**.
 6. Point to:
    - **Permission: Allowed · Safety: Blocked · Resource: Prevented**
-   - **Action blocked**
+   - **Action safely prevented**
    - **Impact 5 resources · Effect never claimed**
 
 Say:
@@ -426,7 +426,7 @@ Point to:
 - **Permission: Allowed**
 - **Safety: Blocked**
 - **Resource: Prevented**
-- **Action blocked**
+- **Action safely prevented**
 - **Potentially affected**, including Production service and Customer dataset
 - **Impact 5 resources · Effect never claimed**
 
@@ -447,11 +447,11 @@ Say:
 
 Do:
 
-1. Click **Open audit timeline**.
+1. Click **Review audit timeline**.
 2. Point out the separate allowed authorization, blocked safety decision,
    breaker transition, and prevented effect.
 3. Reload, reselect **Release Guardian** if necessary, open **Playground**, and
-   show the same ordered evidence and **Action blocked**.
+   show the same ordered evidence and **Safety stop active**.
 4. If time permits, open **Impact map**, select **Customer dataset**, and show
    the highlighted dependency path.
 

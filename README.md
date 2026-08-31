@@ -111,6 +111,28 @@ cannot be bypassed.
 
 The checked-in browser regression runs this flow with `npm run test:e2e`.
 
+### How to read the Protected Action Center
+
+The center is a guided dependency chain, not four unrelated controls. Follow
+the card marked **Do this now**: grant exact access, verify the Alice/Bob
+identity boundary, build trusted staging history, then test the broader
+production change. Completed prerequisites turn green; locked steps always
+state what must happen first.
+
+The result panel names the exact action and separates three questions:
+
+1. **Permission:** may this Agent access this resource?
+2. **Safety:** is this permitted action acceptable in its current historical
+   and downstream-impact context?
+3. **Resource:** did the protected adapter actually perform the effect?
+
+**Safety stop active** means the persistent circuit breaker is pausing all new
+managed actions. Review the audit timeline before selecting **Reset safety
+stop**. Resetting reopens evaluation; it does not approve the previous request,
+and the same risky request may be blocked again. A policy-prevented Run is shown
+as **Action safely prevented**, while **Run failed** is reserved for an actual
+execution or application failure.
+
 ## Fast judge setup (no model credential required)
 
 The selected Track B proof is deterministic and does not call Ark or Codex.

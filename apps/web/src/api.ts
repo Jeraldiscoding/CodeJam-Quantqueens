@@ -23,11 +23,27 @@ export interface GraphEdge {
   createdAt: string;
 }
 
+export interface GraphObservation {
+  id: string;
+  agentNodeId: string;
+  runId?: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  relation: "DEPLOYS_TO" | "PROCESSES" | "CONTAINS" | "READS_FROM" | "CALLS" | "DEPENDS_ON";
+  state: "observed" | "confirmed" | "rejected";
+  confidence: number;
+  sourceKind: "prompt" | "run_output";
+  evidence: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AgentGraph {
   agent: GraphNode;
   owners: GraphNode[];
   capabilityEdges: GraphEdge[];
   impactEdges: GraphEdge[];
+  observationEdges: GraphObservation[];
   activity: Record<"attempted" | "actual" | "denied", GraphEdge[]>;
   reachableNodes: GraphNode[];
   paths: Array<{ nodeIds: string[]; edgeIds: string[] }>;
@@ -45,6 +61,23 @@ export interface BlastRadius {
 export interface GraphCatalog {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  observations: GraphObservation[];
+}
+
+export interface PromptGraphSuggestion {
+  existingNodeId: string | null;
+  label: string;
+  capability: "CAN_READ" | "CAN_WRITE" | "CAN_CALL" | "CAN_USE";
+  classification: GraphNode["classification"];
+  rationale: string;
+}
+
+export interface PromptAnalysis {
+  intent: "informational" | "action" | "suspicious";
+  reasonCode: string;
+  explanation: string;
+  signals: string[];
+  suggestions: PromptGraphSuggestion[];
 }
 
 export class ApiError extends Error {
@@ -135,6 +168,34 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  analyzePrompt: (agentId: string, prompt: string) =>
+    request<{ analysis: PromptAnalysis }>(`/api/agents/${agentId}/prompt-analysis`, {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    }),
+  confirmPromptSuggestion: (agentId: string, suggestion: PromptGraphSuggestion) =>
+    request<{ result: { node: GraphNode; edge: GraphEdge } }>(
+      `/api/agents/${agentId}/graph/suggestions/confirm`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          ...(suggestion.existingNodeId ? { existingNodeId: suggestion.existingNodeId } : {}),
+          label: suggestion.label,
+          capability: suggestion.capability,
+          classification: suggestion.classification,
+        }),
+      },
+    ),
+  observations: (agentId: string) =>
+    request<{ observations: GraphObservation[] }>(`/api/agents/${agentId}/observations`),
+  resolveObservation: (
+    agentId: string,
+    observationId: string,
+    resolution: "confirm" | "reject",
+  ) => request<{ observation: GraphObservation }>(
+    `/api/agents/${agentId}/observations/${observationId}/${resolution}`,
+    { method: "POST" },
+  ),
   runs: (id: string) =>
     request<{ runs: AgentRun[] }>("/api/agents/" + id + "/runs"),
   sendMessage: (id: string, content: string) =>

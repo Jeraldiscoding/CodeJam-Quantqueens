@@ -10,12 +10,21 @@ export type RunStatus =
 export interface RunPolicySummary {
   result: "ALLOW" | "DENY" | "REVIEW_REQUIRED";
   reasonCode: string;
+  intent: "informational" | "action" | "suspicious";
+  intentExplanation: string;
   riskScore: number;
   reviewThreshold: number;
   denyThreshold: number;
   decisionId: string | null;
   approvalRequestId: string | null;
   evaluatedAt: string;
+  riskFactors: Array<{
+    id: string;
+    label: string;
+    riskWeight: number;
+    classification: string;
+    path: string[];
+  }>;
 }
 
 export interface Agent {

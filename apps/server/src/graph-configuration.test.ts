@@ -95,4 +95,46 @@ describe("GraphConfigurationService", () => {
       sourceId: source.id, targetId: target.id, relation: "DEPLOYS_TO",
     })).rejects.toMatchObject({ statusCode: 400 });
   });
+
+  it("turns an actionable prompt into a confirmable graph suggestion", async () => {
+    const store = new InMemoryGraphStore([createUnconfiguredAgentNode(agentId, "Data Helper")]);
+    const configuration = new GraphConfigurationService(store);
+    const dataset = await configuration.createNode({
+      type: "asset",
+      label: "Customer dataset",
+      classification: "restricted",
+    });
+
+    await expect(configuration.analyzePrompt(agentId, "Read the customer dataset")).resolves.toMatchObject({
+      intent: "action",
+      suggestions: [{
+        existingNodeId: dataset.id,
+        label: "Customer dataset",
+        capability: "CAN_READ",
+        classification: "restricted",
+      }],
+    });
+
+    const confirmed = await configuration.confirmPromptSuggestion(agentId, {
+      existingNodeId: dataset.id,
+      label: dataset.label,
+      capability: "CAN_READ",
+      classification: "restricted",
+    });
+    expect(confirmed.edge).toMatchObject({
+      sourceId: `agent:${agentId}`,
+      targetId: dataset.id,
+      relation: "CAN_READ",
+      status: "authorized",
+    });
+  });
+
+  it("does not suggest graph permissions for an explanation-only prompt", async () => {
+    const store = new InMemoryGraphStore([createUnconfiguredAgentNode(agentId, "Data Helper")]);
+    const configuration = new GraphConfigurationService(store);
+    await expect(configuration.analyzePrompt(agentId, "Summarize your responsibilities")).resolves.toMatchObject({
+      intent: "informational",
+      suggestions: [],
+    });
+  });
 });

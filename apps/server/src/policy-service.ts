@@ -76,7 +76,10 @@ export class PolicyService {
    * Evaluates one protected action and records the outcome. Callers must treat
    * anything other than ALLOW as a refusal to execute.
    */
-  async evaluate(request: ProtectedActionRequest): Promise<PolicyEvaluation> {
+  async evaluate(
+    request: ProtectedActionRequest,
+    options: { forceReviewReason?: string } = {},
+  ): Promise<PolicyEvaluation> {
     const agentNodeId = `agent:${request.agentId}`;
     const target = await this.requireAssetNode(request.targetNodeId);
     const graphRevision = await this.graph.getAgentGraphRevision(request.agentId);
@@ -97,7 +100,7 @@ export class PolicyService {
       target.id,
     );
 
-    const outcome = this.decide(impact);
+    const outcome = this.decide(impact, options.forceReviewReason);
     const createdAt = now();
     const decision: PolicyDecisionRecord = {
       id: `decision:${randomUUID()}`,
@@ -313,12 +316,18 @@ export class PolicyService {
     return this.governance.getApprovalRequest(approval.id);
   }
 
-  private decide(impact: ActionImpact | null): { result: PolicyResult; reasonCode: string } {
+  private decide(
+    impact: ActionImpact | null,
+    forceReviewReason?: string,
+  ): { result: PolicyResult; reasonCode: string } {
     if (!impact) {
       return { result: "DENY", reasonCode: "NO_DIRECT_CAPABILITY" };
     }
     if (impact.score > this.thresholds.denyThreshold) {
       return { result: "DENY", reasonCode: "RISK_ABOVE_DENY_THRESHOLD" };
+    }
+    if (forceReviewReason) {
+      return { result: "REVIEW_REQUIRED", reasonCode: forceReviewReason };
     }
     if (impact.score > this.thresholds.reviewThreshold) {
       return { result: "REVIEW_REQUIRED", reasonCode: "RISK_ABOVE_REVIEW_THRESHOLD" };

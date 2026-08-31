@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import { HttpError } from "./errors.js";
 import type { GraphEdge, GraphEdgeRelation, GraphNode, GraphStore } from "./graph-types.js";
 import { graphCapabilities } from "./knowledge-graph.js";
+import type { GraphObservation, KnowledgeObservationStore } from "./knowledge-observation.js";
+import {
+  analyzePromptIntent,
+  inferPromptCapability,
+  inferPromptClassification,
+  inferPromptResource,
+  type PromptIntentAnalysis,
+} from "./prompt-intelligence.js";
+import type { CapabilityRelation } from "./policy-store.js";
 
 const impactRelations = new Set<GraphEdgeRelation>(["DEPLOYS_TO", "PROCESSES", "CONTAINS"]);
 const editableRelations = new Set<GraphEdgeRelation>([
@@ -23,6 +32,25 @@ export interface CreateGraphRelationshipInput {
   sourceId: string;
   targetId: string;
   relation: GraphEdgeRelation;
+}
+
+export interface PromptGraphSuggestion {
+  existingNodeId: string | null;
+  label: string;
+  capability: CapabilityRelation;
+  classification: GraphNode["classification"];
+  rationale: string;
+}
+
+export interface PromptGraphAnalysis extends PromptIntentAnalysis {
+  suggestions: PromptGraphSuggestion[];
+}
+
+export interface ConfirmPromptGraphSuggestionInput {
+  existingNodeId?: string | undefined;
+  label: string;
+  capability: CapabilityRelation;
+  classification: GraphNode["classification"];
 }
 
 const slug = (value: string) =>
@@ -65,14 +93,80 @@ function validateMetadata(metadata: Record<string, unknown>): void {
  * prompt and it limits an Agent editor to that Agent's connected subgraph.
  */
 export class GraphConfigurationService {
-  constructor(private readonly store: GraphStore) {}
+  constructor(
+    private readonly store: GraphStore,
+    private readonly observations?: KnowledgeObservationStore,
+  ) {}
 
-  async getCatalog(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
-    const [nodes, edges] = await Promise.all([
+  async getCatalog(): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; observations: GraphObservation[] }> {
+    const [nodes, edges, observations] = await Promise.all([
       this.store.getAllNodes(),
       this.store.getAllEdges(),
+      this.observations?.getAll() ?? Promise.resolve([]),
     ]);
-    return { nodes, edges };
+    return { nodes, edges, observations };
+  }
+
+  async analyzePrompt(agentId: string, prompt: string): Promise<PromptGraphAnalysis> {
+    const agentNodeId = `agent:${agentId}`;
+    const agent = await this.store.getNode(agentNodeId);
+    if (!agent || agent.type !== "agent") throw new HttpError(404, "Graph Agent not found");
+
+    const intent = analyzePromptIntent(prompt);
+    if (intent.intent === "informational") return { ...intent, suggestions: [] };
+
+    const assets = (await this.store.getAllNodes()).filter((node) => node.type === "asset");
+    const mentioned = this.findMentionedAsset(prompt, assets);
+    const inferred = inferPromptResource(prompt);
+    if (!mentioned && !inferred) return { ...intent, suggestions: [] };
+
+    const target = mentioned ?? null;
+    const capability = inferPromptCapability(prompt);
+    if (target) {
+      const alreadyConnected = (await this.store.getOutgoingEdges(agentNodeId, {
+        relations: [capability],
+        statuses: ["authorized"],
+      })).some((edge) => edge.targetId === target.id);
+      if (alreadyConnected) return { ...intent, suggestions: [] };
+    }
+
+    const label = target?.label ?? inferred!.label;
+    return {
+      ...intent,
+      suggestions: [{
+        existingNodeId: target?.id ?? null,
+        label,
+        capability,
+        classification: target?.classification ?? inferPromptClassification(label, prompt),
+        rationale: target
+          ? `The prompt refers to the existing ${target.label} asset and implies ${capability.replace("CAN_", "").toLowerCase()} access.`
+          : inferred!.rationale,
+      }],
+    };
+  }
+
+  async confirmPromptSuggestion(
+    agentId: string,
+    input: ConfirmPromptGraphSuggestionInput,
+  ): Promise<{ node: GraphNode; edge: GraphEdge }> {
+    const existingByLabel = (await this.store.getAllNodes()).find(
+      (node) => node.type === "asset" && node.label.toLowerCase() === input.label.trim().toLowerCase(),
+    );
+    const node = input.existingNodeId
+      ? await this.store.getNode(input.existingNodeId)
+      : existingByLabel ?? await this.createNode({
+          type: "asset",
+          label: input.label,
+          classification: input.classification,
+          metadata: { inferenceSource: "confirmed-prompt" },
+        });
+    if (!node || node.type !== "asset") throw new HttpError(400, "The suggested resource must be an asset");
+    const edge = await this.createRelationship(agentId, {
+      sourceId: `agent:${agentId}`,
+      targetId: node.id,
+      relation: input.capability,
+    });
+    return { node, edge };
   }
 
   async createNode(input: CreateGraphNodeInput): Promise<GraphNode> {
@@ -168,6 +262,19 @@ export class GraphConfigurationService {
         "The relationship source must already be connected to this Agent. Add its direct permission or upstream relationship first.",
       );
     }
+  }
+
+  private findMentionedAsset(prompt: string, assets: GraphNode[]): GraphNode | null {
+    const normalized = prompt.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+    const generic = new Set(["api", "service", "system", "data", "file", "files"]);
+    return [...assets]
+      .sort((left, right) => right.label.length - left.label.length)
+      .find((asset) => {
+        const label = asset.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+        if (normalized.includes(label)) return true;
+        const distinctive = label.split(" ").filter((token) => token.length >= 4 && !generic.has(token));
+        return distinctive.length > 0 && distinctive.every((token) => normalized.includes(token));
+      }) ?? null;
   }
 
   private async reachableFrom(agentNodeId: string): Promise<Set<string>> {

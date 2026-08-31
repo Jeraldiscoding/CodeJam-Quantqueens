@@ -9,6 +9,7 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import type { GraphConfigurationService } from "./graph-configuration.js";
 import type { KnowledgeGraphService } from "./knowledge-graph.js";
+import type { KnowledgeObservationService } from "./knowledge-observation.js";
 import { MiddlewareStoreError } from "./middleware-validation.js";
 import type { PolicyService } from "./policy-service.js";
 import type { ResourceGateway } from "./resource-gateway.js";
@@ -62,6 +63,40 @@ const graphRelationshipBody = z.object({
   targetId: z.string().min(3).max(180),
   relation: z.enum(["OWNS", "CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE", "DEPLOYS_TO", "PROCESSES", "CONTAINS"]),
 });
+const promptAnalysisBody = z.object({
+  prompt: z.string().trim().min(1).max(50_000),
+});
+const confirmPromptSuggestionBody = z.object({
+  existingNodeId: z.string().min(3).max(180).optional(),
+  label: z.string().trim().min(1).max(120),
+  capability: z.enum(["CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE"]),
+  classification: z.enum(["public", "internal", "confidential", "restricted"]),
+});
+const observationIdParams = z.object({
+  id: z.string().uuid(),
+  observationId: z.string().min(12).max(180),
+});
+
+/**
+ * Fastify exposes the original request URL as `request.url`, while routing may
+ * decode percent-encoded path characters. Authorization must therefore use the
+ * matched route and a canonical fallback, never a raw string prefix alone.
+ */
+function canonicalRequestPath(rawUrl: string): string | null {
+  const rawPath = rawUrl.split("?", 1)[0] ?? "/";
+  try {
+    let decoded = rawPath;
+    for (let index = 0; index < 3; index += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+    return new URL(decoded.replaceAll("\\", "/"), "http://localhost").pathname
+      .replace(/\/{2,}/g, "/");
+  } catch {
+    return null;
+  }
+}
 
 export async function createApp(
   config: AppConfig,
@@ -70,6 +105,7 @@ export async function createApp(
   graphConfiguration?: GraphConfigurationService,
   policy?: PolicyService,
   gateway?: ResourceGateway,
+  knowledgeObservations?: KnowledgeObservationService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -87,11 +123,19 @@ export async function createApp(
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    const matchedPath = request.routeOptions.url ?? "";
+    const canonicalPath = canonicalRequestPath(request.url);
+    const isApiRequest =
+      matchedPath.startsWith("/api/") || canonicalPath?.startsWith("/api/") === true;
+    const isPublicApi =
+      matchedPath === "/api/health" ||
+      matchedPath === "/api/auth" ||
+      canonicalPath === "/api/health" ||
+      canonicalPath === "/api/auth";
     if (
       !config.authToken ||
-      !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
-      request.url === "/api/auth"
+      !isApiRequest ||
+      isPublicApi
     ) {
       return;
     }
@@ -159,6 +203,42 @@ export async function createApp(
         edge: await graphConfiguration.createRelationship(id, body),
       });
     });
+
+    app.post("/api/agents/:id/prompt-analysis", async (request) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      const { prompt } = promptAnalysisBody.parse(request.body);
+      return { analysis: await graphConfiguration.analyzePrompt(id, prompt) };
+    });
+
+    app.post("/api/agents/:id/graph/suggestions/confirm", async (request, reply) => {
+      const { id } = agentIdParams.parse(request.params);
+      service.getAgent(id);
+      const body = confirmPromptSuggestionBody.parse(request.body);
+      return reply.code(201).send({
+        result: await graphConfiguration.confirmPromptSuggestion(id, body),
+      });
+    });
+
+    if (knowledgeObservations) {
+      app.get("/api/agents/:id/observations", async (request) => {
+        const { id } = agentIdParams.parse(request.params);
+        service.getAgent(id);
+        return { observations: await knowledgeObservations.listForAgent(id) };
+      });
+
+      app.post("/api/agents/:id/observations/:observationId/confirm", async (request) => {
+        const { id, observationId } = observationIdParams.parse(request.params);
+        service.getAgent(id);
+        return { observation: await knowledgeObservations.resolve(id, observationId, "confirmed") };
+      });
+
+      app.post("/api/agents/:id/observations/:observationId/reject", async (request) => {
+        const { id, observationId } = observationIdParams.parse(request.params);
+        service.getAgent(id);
+        return { observation: await knowledgeObservations.resolve(id, observationId, "rejected") };
+      });
+    }
   }
 
   if (policy && gateway) {

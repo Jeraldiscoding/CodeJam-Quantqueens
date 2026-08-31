@@ -7,6 +7,7 @@ import type {
 } from "./graph-types.js";
 import { canonicalize, sha256Hex } from "./policy-hash.js";
 import type { CapabilityRelation } from "./policy-store.js";
+import type { GraphObservation, KnowledgeObservationStore } from "./knowledge-observation.js";
 
 const capabilityRelations = ["CAN_READ", "CAN_WRITE", "CAN_CALL", "CAN_USE"] as const;
 const impactRelations = ["DEPLOYS_TO", "PROCESSES", "CONTAINS"] as const;
@@ -42,6 +43,7 @@ export interface AgentGraph {
   owners: GraphNode[];
   capabilityEdges: GraphEdge[];
   impactEdges: GraphEdge[];
+  observationEdges: GraphObservation[];
   activity: Record<(typeof activityStatuses)[number], GraphEdge[]>;
   reachableNodes: GraphNode[];
   paths: GraphPath[];
@@ -72,6 +74,7 @@ export interface ActionImpact {
 interface TraversalResult {
   capabilityEdges: GraphEdge[];
   impactEdges: GraphEdge[];
+  observationEdges: GraphObservation[];
   reachableNodes: GraphNode[];
   pathsByNodeId: Map<string, GraphPath>;
 }
@@ -90,6 +93,7 @@ export class KnowledgeGraphService {
   constructor(
     private readonly store: GraphStore,
     private readonly blastRadiusThreshold = 20,
+    private readonly observations?: KnowledgeObservationStore,
   ) {}
 
   async getAgentGraph(agentId: string): Promise<AgentGraph> {
@@ -103,6 +107,7 @@ export class KnowledgeGraphService {
       owners,
       capabilityEdges: traversal.capabilityEdges,
       impactEdges: traversal.impactEdges,
+      observationEdges: traversal.observationEdges,
       activity,
       reachableNodes: traversal.reachableNodes,
       paths: [...traversal.pathsByNodeId.values()],
@@ -195,6 +200,23 @@ export class KnowledgeGraphService {
         });
         queue.push(next);
       }
+      const inferred = await this.observations?.getOutgoing(
+        agent.id,
+        current.id,
+        ["observed", "confirmed"],
+      ) ?? [];
+      for (const observation of inferred) {
+        this.registerEdge(observation, visitedEdgeIds);
+        const next = await this.store.getNode(observation.targetNodeId);
+        if (!next || visitedNodeIds.has(next.id)) continue;
+        this.registerNode(next, visitedNodeIds);
+        reachable.push(next);
+        pathsByNodeId.set(next.id, {
+          nodeIds: [...currentPath.nodeIds, next.id],
+          edgeIds: [...currentPath.edgeIds, observation.id],
+        });
+        queue.push(next);
+      }
     }
 
     const targets = reachable
@@ -237,6 +259,16 @@ export class KnowledgeGraphService {
             sourceId: edge.sourceId,
             targetId: edge.targetId,
             relation: edge.relation,
+          }))
+          .sort(byId),
+        observations: graph.observationEdges
+          .map((observation) => ({
+            id: observation.id,
+            sourceNodeId: observation.sourceNodeId,
+            targetNodeId: observation.targetNodeId,
+            relation: observation.relation,
+            state: observation.state,
+            confidence: observation.confidence,
           }))
           .sort(byId),
       }),
@@ -300,6 +332,7 @@ export class KnowledgeGraphService {
     const visitedNodeIds = new Set<string>([agent.id]);
     const visitedEdgeIds = new Set<string>();
     const impactEdges: GraphEdge[] = [];
+    const observationEdges: GraphObservation[] = [];
     const queue: GraphNode[] = [];
 
     for (const edge of capabilityEdges) {
@@ -334,9 +367,27 @@ export class KnowledgeGraphService {
         });
         queue.push(target);
       }
+      const inferred = await this.observations?.getOutgoing(
+        agent.id,
+        current.id,
+        ["observed", "confirmed"],
+      ) ?? [];
+      for (const observation of inferred) {
+        this.registerEdge(observation, visitedEdgeIds);
+        observationEdges.push(observation);
+        const target = await this.store.getNode(observation.targetNodeId);
+        if (!target || visitedNodeIds.has(target.id)) continue;
+        this.registerNode(target, visitedNodeIds);
+        reachableNodes.push(target);
+        pathsByNodeId.set(target.id, {
+          nodeIds: [...currentPath.nodeIds, target.id],
+          edgeIds: [...currentPath.edgeIds, observation.id],
+        });
+        queue.push(target);
+      }
     }
 
-    return { capabilityEdges, impactEdges, reachableNodes, pathsByNodeId };
+    return { capabilityEdges, impactEdges, observationEdges, reachableNodes, pathsByNodeId };
   }
 
   private registerNode(node: GraphNode, visitedNodeIds: Set<string>): void {
@@ -346,7 +397,7 @@ export class KnowledgeGraphService {
     }
   }
 
-  private registerEdge(edge: GraphEdge, visitedEdgeIds: Set<string>): void {
+  private registerEdge(edge: { id: string }, visitedEdgeIds: Set<string>): void {
     if (visitedEdgeIds.has(edge.id)) return;
     visitedEdgeIds.add(edge.id);
     if (visitedEdgeIds.size > MAX_TRAVERSED_EDGES) {

@@ -5,6 +5,7 @@ import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import type { RunPolicyGate } from "./run-policy-gate.js";
+import type { KnowledgeObservationService } from "./knowledge-observation.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -18,6 +19,8 @@ import type {
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+const legacyDemoInstructions =
+  "Explain graph relationships clearly. Treat graph context as risk evidence, not permission to access anything beyond approved tools.";
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -30,6 +33,7 @@ export class AgentService {
     private readonly runner: AgentRunner,
     private readonly graphProvisioner?: AgentGraphProvisioner,
     private readonly runPolicyGate?: RunPolicyGate,
+    private readonly knowledgeObserver?: KnowledgeObservationService,
   ) {}
 
   async initialize(): Promise<void> {
@@ -225,6 +229,9 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
+    if (this.knowledgeObserver) {
+      await this.captureKnowledge(agentId, runId, "prompt", prompt);
+    }
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -340,10 +347,11 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: this.runtimePrompt(run),
         threadId: agentAtStart.codexThreadId,
       });
       const completedAt = now();
+      await this.captureKnowledge(agentAtStart.id, run.id, "run_output", result.output);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -388,6 +396,21 @@ export class AgentService {
     }
   }
 
+  private async captureKnowledge(
+    agentId: string,
+    runId: string,
+    sourceKind: "prompt" | "run_output",
+    text: string,
+  ): Promise<void> {
+    if (!this.knowledgeObserver) return;
+    try {
+      await this.knowledgeObserver.observeText({ agentId, runId, sourceKind, text });
+    } catch {
+      // Learning is supplementary evidence. A failed extraction must never
+      // block or fail the user's Agent run.
+    }
+  }
+
   /**
    * Runs the pre-run policy check. Returns false when the Run must not reach
    * the runner, having already recorded the outcome on the Run itself.
@@ -423,11 +446,14 @@ export class AgentService {
     }
 
     if (summary.result === "DENY") {
+      const denialDetail = summary.reasonCode === "RISK_ABOVE_DENY_THRESHOLD"
+        ? `blast radius ${summary.riskScore} exceeds the deny threshold of ${summary.denyThreshold}`
+        : summary.intentExplanation;
       await this.finishBlockedRun(
         agentAtStart.id,
         run.id,
         summary,
-        `Policy denied this run (${summary.reasonCode}): blast radius ${summary.riskScore} exceeds the deny threshold of ${summary.denyThreshold}.`,
+        `Policy denied this run (${summary.reasonCode}): ${denialDetail}.`,
       );
       return false;
     }
@@ -475,6 +501,19 @@ export class AgentService {
     });
   }
 
+  private runtimePrompt(run: AgentRun): string {
+    const policy = this.getRun(run.id).policy;
+    if (policy?.intent !== "informational") return run.prompt;
+    return [
+      "Request mode: explanation only.",
+      "Answer the user's question without editing files or running mutating commands.",
+      "Keep the answer focused on the Agent's user-facing purpose. Do not present internal guardrails as responsibilities unless asked.",
+      "",
+      "User request:",
+      run.prompt,
+    ].join("\n");
+  }
+
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {
     return this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -516,14 +555,25 @@ export class AgentService {
     if (!this.config.seedDemoData) return;
     let seededNewAgent = false;
     for (const demo of Object.values(demoAgents)) {
-      if (this.store.snapshot().agents.some((agent) => agent.id === demo.id)) continue;
+      const existing = this.store.snapshot().agents.find((agent) => agent.id === demo.id);
+      if (existing) {
+        if (existing.instructions === legacyDemoInstructions) {
+          const upgraded = await this.store.mutate((database) => {
+            const agent = database.agents.find((item) => item.id === demo.id)!;
+            agent.instructions = demo.instructions;
+            agent.updatedAt = now();
+            return structuredClone(agent);
+          });
+          await this.workspaces.writeInstructions(upgraded);
+        }
+        continue;
+      }
       const timestamp = now();
       const demoAgent: Agent = {
         id: demo.id,
         name: demo.name,
         description: demo.description,
-        instructions:
-          "Explain graph relationships clearly. Treat graph context as risk evidence, not permission to access anything beyond approved tools.",
+        instructions: demo.instructions,
         status: "ready",
         workspacePath: this.workspaces.workspacePath(demo.id),
         codexThreadId: null,

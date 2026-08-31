@@ -26,6 +26,31 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("protects API routes whose path contains percent-encoded characters", async () => {
+    const app = await createApp(
+      loadConfig({ NODE_ENV: "test", APP_AUTH_TOKEN: "a-strong-test-token" }),
+      service,
+    );
+
+    const denied = await app.inject({ method: "GET", url: "/%61pi/agents" });
+    expect(denied.statusCode).toBe(401);
+
+    const deniedMutation = await app.inject({
+      method: "POST",
+      url: "/%61pi/agents",
+      payload: { name: "Must not be created" },
+    });
+    expect(deniedMutation.statusCode).toBe(401);
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/%61pi/agents",
+      headers: { authorization: "Bearer a-strong-test-token" },
+    });
+    expect(allowed.statusCode).toBe(200);
+    await app.close();
+  });
+
   it("preserves Fastify client error status codes", async () => {
     const app = await createApp(loadConfig({ NODE_ENV: "test" }), service);
     const malformed = await app.inject({

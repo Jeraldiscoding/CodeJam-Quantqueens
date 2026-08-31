@@ -6,7 +6,7 @@ import {
   type PointerEvent,
   type WheelEvent,
 } from "react";
-import { api, type AgentGraph, type BlastRadius, type GraphCatalog, type GraphEdge, type GraphNode } from "./api";
+import { api, type AgentGraph, type BlastRadius, type GraphCatalog, type GraphEdge, type GraphNode, type GraphObservation } from "./api";
 import type { Agent } from "./types";
 
 type NodeKind = "human" | "agent" | "asset" | "data" | "run";
@@ -30,8 +30,15 @@ interface VisualEdge {
   target: string;
   relation: string;
   detail: string;
-  kind: "ownership" | "permission" | "impact" | "context";
-  primary?: boolean;
+  kind: "ownership" | "permission" | "impact" | "context" | "inference";
+}
+
+interface FocusPath {
+  targetId: string;
+  targetLabel: string;
+  riskWeight: number;
+  nodeIds: string[];
+  edgeIds: string[];
 }
 
 interface VisualGraph {
@@ -42,6 +49,8 @@ interface VisualGraph {
   decision: "ALLOW" | "REVIEW_REQUIRED";
   isEmpty: boolean;
   evidence: string;
+  riskFactors: Array<{ id: string; label: string; classification: string; weight: number }>;
+  focusPaths: FocusPath[];
 }
 
 interface HoverDetail {
@@ -128,14 +137,20 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
     });
   }
 
-  const primaryEdgeIds = new Set(
-    [...blastRadius.targets]
-      .sort((left, right) => right.node.riskWeight - left.node.riskWeight)[0]
-      ?.path.edgeIds ?? [],
-  );
-  const relationships: GraphEdge[] = [
+  const relationships: Array<GraphEdge & { observation?: GraphObservation }> = [
     ...graph.capabilityEdges,
     ...graph.impactEdges,
+    ...graph.observationEdges.filter((observation) => observation.state !== "rejected").map((observation) => ({
+      id: observation.id,
+      sourceId: observation.sourceNodeId,
+      targetId: observation.targetNodeId,
+      relation: observation.relation,
+      status: "actual" as const,
+      runId: observation.runId,
+      metadata: {},
+      createdAt: observation.createdAt,
+      observation,
+    })),
     ...graph.owners.map((owner) => ({
       id: `owner:${owner.id}:${graph.agent.id}`,
       sourceId: owner.id,
@@ -153,12 +168,14 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
       source: edge.sourceId,
       target: edge.targetId,
       relation: edge.relation,
-      detail: detailForEdge(edge),
-      kind: edgeKind(edge.relation),
-      primary: primaryEdgeIds.has(edge.id),
+      detail: edge.observation
+        ? `${edge.observation.state === "confirmed" ? "Confirmed" : "Inferred"} from ${edge.observation.sourceKind === "prompt" ? "a user prompt" : "Agent output"} at ${Math.round(edge.observation.confidence * 100)}% confidence. Evidence: ${edge.observation.evidence}`
+        : detailForEdge(edge),
+      kind: edge.observation ? "inference" : edgeKind(edge.relation),
     }));
   const targets = [...blastRadius.targets].sort(
-    (left, right) => right.node.riskWeight - left.node.riskWeight,
+    (left, right) =>
+      right.node.riskWeight - left.node.riskWeight || left.node.label.localeCompare(right.node.label),
   );
   const evidence = targets.length === 0
     ? "No direct permissions, connected assets, or protected-data impact have been configured."
@@ -181,6 +198,19 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
     decision: blastRadius.decision,
     isEmpty: graph.capabilityEdges.length === 0 && graph.impactEdges.length === 0,
     evidence,
+    riskFactors: targets.map(({ node }) => ({
+      id: node.id,
+      label: node.label,
+      classification: node.classification,
+      weight: node.riskWeight,
+    })),
+    focusPaths: targets.map(({ node, path }) => ({
+      targetId: node.id,
+      targetLabel: node.label,
+      riskWeight: node.riskWeight,
+      nodeIds: path.nodeIds,
+      edgeIds: path.edgeIds,
+    })),
   };
 }
 
@@ -285,7 +315,7 @@ function GraphAccessConfigurator({ agent, onSaved }: { agent: Agent; onSaved: ()
 
   return (
     <section className="graph-configurator" aria-labelledby="graph-configurator-title">
-      <div className="graph-configurator-intro"><span className="eyebrow">Guided configuration</span><h3 id="graph-configurator-title">Connect trusted access, infer the consequence</h3><p>You confirm the access and classification. Existing dependencies, reachable assets, and Blast Radius are derived automatically.</p></div>
+      <div className="graph-configurator-intro"><span className="eyebrow">Manual fallback</span><h3 id="graph-configurator-title">Review or add trusted access</h3><p>The Playground now suggests relationships from actionable prompts. Use this editor when you need to add or correct access directly.</p></div>
       <form onSubmit={submit}>
         <div className="graph-config-mode" role="group" aria-label="Asset source"><button type="button" className={mode === "existing" ? "active" : ""} onClick={() => setMode("existing")}>Existing asset</button><button type="button" className={mode === "new" ? "active" : ""} onClick={() => setMode("new")}>New asset</button></div>
         <div className="graph-config-fields">
@@ -302,14 +332,16 @@ function GraphAccessConfigurator({ agent, onSaved }: { agent: Agent; onSaved: ()
 }
 
 export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
-  const [graphData, setGraphData] = useState<{ graph: AgentGraph; blastRadius: BlastRadius } | null>(null);
+  const [graphData, setGraphData] = useState<{ graph: AgentGraph; blastRadius: BlastRadius; observations: GraphObservation[]; catalog: GraphCatalog } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedNodeId, setSelectedNodeId] = useState(`agent:${agent.id}`);
+  const [focusedTargetId, setFocusedTargetId] = useState<string | null>(null);
   const [pathHighlighted, setPathHighlighted] = useState(true);
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 });
   const [hover, setHover] = useState<HoverDetail | null>(null);
+  const [resolvingObservationId, setResolvingObservationId] = useState<string | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ pointerId: number; x: number; y: number; originX: number; originY: number } | null>(null);
 
@@ -317,9 +349,9 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
     let cancelled = false;
     setIsLoading(true);
     setLoadError(null);
-    void Promise.all([api.graph(agent.id), api.blastRadius(agent.id)])
-      .then(([graphResult, blastRadiusResult]) => {
-        if (!cancelled) setGraphData({ graph: graphResult.graph, blastRadius: blastRadiusResult.blastRadius });
+    void Promise.all([api.graph(agent.id), api.blastRadius(agent.id), api.observations(agent.id), api.wholeGraph()])
+      .then(([graphResult, blastRadiusResult, observationResult, catalogResult]) => {
+        if (!cancelled) setGraphData({ graph: graphResult.graph, blastRadius: blastRadiusResult.blastRadius, observations: observationResult.observations, catalog: catalogResult.graph });
       })
       .catch((reason) => {
         if (!cancelled) setLoadError(reason instanceof Error ? reason.message : "Unable to load the live graph.");
@@ -334,6 +366,7 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
 
   useEffect(() => {
     setSelectedNodeId(`agent:${agent.id}`);
+    setFocusedTargetId(null);
     setViewport({ x: 0, y: 0, scale: 1 });
     setHover(null);
   }, [agent.id]);
@@ -344,6 +377,22 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
   );
   const nodesById = useMemo(() => new Map(graph?.nodes.map((node) => [node.id, node]) ?? []), [graph]);
   const selectedNode = nodesById.get(selectedNodeId) ?? graph?.nodes[0] ?? null;
+  const catalogNodesById = useMemo(() => new Map(graphData?.catalog.nodes.map((node) => [node.id, node]) ?? []), [graphData]);
+  const reviewObservations = graphData?.observations.filter((observation) => observation.state !== "rejected") ?? [];
+  const focusedPath = graph?.focusPaths.find((path) => path.targetId === focusedTargetId)
+    ?? graph?.focusPaths[0]
+    ?? null;
+  const focusedNodeIds = new Set(focusedPath?.nodeIds ?? []);
+  const focusedEdgeIds = new Set(focusedPath?.edgeIds ?? []);
+  const focusedPathText = focusedPath
+    ? focusedPath.nodeIds.map((nodeId, index) => {
+        const nodeLabel = nodesById.get(nodeId)?.label ?? nodeId;
+        if (index === focusedPath.edgeIds.length) return nodeLabel;
+        const edgeId = focusedPath.edgeIds[index];
+        const relation = graph?.edges.find((edge) => edge.id === edgeId)?.relation ?? "connects to";
+        return `${nodeLabel} → ${relation} →`;
+      }).join(" ")
+    : null;
 
   const placeHover = (event: PointerEvent<SVGGElement>, title: string, detail: string) => {
     const bounds = canvasRef.current?.getBoundingClientRect();
@@ -370,6 +419,18 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
   const zoomWithWheel = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
     setViewport((current) => ({ ...current, scale: clamp(current.scale + (event.deltaY < 0 ? 0.12 : -0.12), 0.65, 1.8) }));
+  };
+  const resolveObservation = async (observation: GraphObservation, resolution: "confirm" | "reject") => {
+    setResolvingObservationId(observation.id);
+    setLoadError(null);
+    try {
+      await api.resolveObservation(agent.id, observation.id, resolution);
+      setReloadToken((value) => value + 1);
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "Unable to update the learned relationship.");
+    } finally {
+      setResolvingObservationId(null);
+    }
   };
 
   if (isLoading && !graph) {
@@ -401,16 +462,22 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
               {graph.edges.map((edge) => {
                 const source = nodesById.get(edge.source)!;
                 const target = nodesById.get(edge.target)!;
+                const isFocused = focusedEdgeIds.has(edge.id);
                 const angle = Math.atan2(target.y - source.y, target.x - source.x);
                 const x1 = source.x + Math.cos(angle) * radius[source.tone];
                 const y1 = source.y + Math.sin(angle) * radius[source.tone];
                 const x2 = target.x - Math.cos(angle) * (radius[target.tone] + 6);
                 const y2 = target.y - Math.sin(angle) * (radius[target.tone] + 6);
-                return <g key={edge.id} className={`graph-edge graph-edge-${edge.kind} ${edge.primary ? "graph-edge-primary" : ""} graph-interactive`} onPointerEnter={(event) => placeHover(event, edge.relation, edge.detail)} onPointerLeave={() => setHover(null)}><line className="graph-edge-hit" x1={x1} y1={y1} x2={x2} y2={y2} /><line x1={x1} y1={y1} x2={x2} y2={y2} markerEnd="url(#graph-arrow)" />{edge.primary && <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 10} textAnchor="middle">{edge.relation}</text>}</g>;
+                return <g key={edge.id} className={`graph-edge graph-edge-${edge.kind} ${isFocused ? "graph-edge-primary" : ""} graph-interactive`} onPointerEnter={(event) => placeHover(event, edge.relation, edge.detail)} onPointerLeave={() => setHover(null)}><line className="graph-edge-hit" x1={x1} y1={y1} x2={x2} y2={y2} /><line x1={x1} y1={y1} x2={x2} y2={y2} markerEnd="url(#graph-arrow)" />{isFocused && <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 10} textAnchor="middle">{edge.relation}</text>}</g>;
               })}
               {graph.nodes.map((node) => {
                 const active = selectedNodeId === node.id;
-                return <g key={node.id} className={`graph-node graph-node-${node.tone} graph-interactive ${active ? "selected" : ""}`} role="button" tabIndex={0} aria-label={`Select ${node.label}`} aria-pressed={active} onClick={() => setSelectedNodeId(node.id)} onPointerEnter={(event) => placeHover(event, node.label, node.detail)} onPointerLeave={() => setHover(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedNodeId(node.id); } }}><title>{node.label}</title><circle cx={node.x} cy={node.y} r={radius[node.tone]} /><text className="graph-node-label" x={node.x} y={node.y + radius[node.tone] + 20} textAnchor="middle">{node.label}</text></g>;
+                const hasFocusPath = graph.focusPaths.some((path) => path.targetId === node.id);
+                const selectNode = () => {
+                  setSelectedNodeId(node.id);
+                  if (hasFocusPath) setFocusedTargetId(node.id);
+                };
+                return <g key={node.id} className={`graph-node graph-node-${node.tone} graph-interactive ${active ? "selected" : ""} ${focusedNodeIds.has(node.id) ? "graph-node-focused" : ""}`} role="button" tabIndex={0} aria-label={`Select ${node.label}${hasFocusPath ? " and focus its impact path" : ""}`} aria-pressed={active} onClick={selectNode} onPointerEnter={(event) => placeHover(event, node.label, node.detail)} onPointerLeave={() => setHover(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(); } }}><title>{node.label}</title><circle cx={node.x} cy={node.y} r={radius[node.tone]} /><text className="graph-node-label" x={node.x} y={node.y + radius[node.tone] + 20} textAnchor="middle">{node.label}</text></g>;
               })}
               {graph.isEmpty && <text className="graph-empty-message" x={mapWidth / 2} y={mapHeight / 2 + 105} textAnchor="middle">No relationships configured</text>}
             </g>
@@ -420,7 +487,19 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
         <aside className="graph-inspector" aria-live="polite"><span className="eyebrow">Selected node</span><div className="inspector-title"><span className={`inspector-dot inspector-${selectedNode.tone}`} /><div><h3>{selectedNode.label}</h3><span>{selectedNode.kind === "data" ? "Data category" : selectedNode.kind}</span></div></div><p>{selectedNode.detail}</p><dl><div><dt>Classification</dt><dd>{selectedNode.classification}</dd></div><div><dt>Risk contribution</dt><dd>{selectedNode.risk ? `${selectedNode.risk} points` : "Context only"}</dd></div></dl><div className="inspector-note"><strong>Reading the field</strong>{selectedNode.risk > 0 ? " This node contributes once to the Blast Radius." : " This node supplies relationship context without increasing the score."}</div></aside>
       </div>
 
-      <footer className="graph-evidence"><span>{graph.decision === "REVIEW_REQUIRED" ? "Why review?" : "Current evidence"}</span><p>{graph.evidence}</p></footer>
+      <footer className="graph-evidence">
+        <div className="graph-focus-summary"><span>{focusedPath ? "Focused path" : graph.decision === "REVIEW_REQUIRED" ? "Why review?" : "Current evidence"}</span><p>{focusedPathText ?? graph.evidence}</p>{focusedPath && <small>{focusedTargetId ? `Focused because you selected ${focusedPath.targetLabel}.` : `${focusedPath.targetLabel} is focused automatically because it has the highest individual risk weight (${focusedPath.riskWeight}).`} The graph starts at a stored Agent permission, follows trusted topology plus non-rejected learned relationships, and keeps the first deterministic shortest path it finds. Select another scored asset to trace that route.</small>}</div>
+        {graph.riskFactors.length > 0 && <div className="graph-score-equation" role="group" aria-label={`Blast radius calculation: ${graph.evidence}`}>{graph.riskFactors.map((factor, index) => <div className="graph-score-term" key={factor.id}><button type="button" className={focusedPath?.targetId === factor.id ? "active" : ""} aria-pressed={focusedPath?.targetId === factor.id} aria-label={`Focus path to ${factor.label}, ${factor.weight} risk points`} onClick={() => { setFocusedTargetId(factor.id); setSelectedNodeId(factor.id); setPathHighlighted(true); }}><b>{factor.label}</b><small>{factor.classification}</small><strong>{factor.weight}</strong></button><i>{index < graph.riskFactors.length - 1 ? "+" : "="}</i></div>)}<em>{graph.score}</em></div>}
+      </footer>
+      <section className="knowledge-review" aria-labelledby="knowledge-review-title">
+        <div className="knowledge-review-heading"><div><span className="eyebrow">Learned from activity</span><h3 id="knowledge-review-title">Relationship observations</h3></div><p>Prompts and completed Agent replies can add evidence here. Observations may increase risk, but they never grant the Agent permission.</p></div>
+        {reviewObservations.length === 0 ? <p className="knowledge-review-empty">No relationships have been learned yet. Try describing how two systems connect in the Playground.</p> : <div className="knowledge-review-list">{reviewObservations.map((observation) => {
+          const source = catalogNodesById.get(observation.sourceNodeId)?.label ?? observation.sourceNodeId;
+          const target = catalogNodesById.get(observation.targetNodeId)?.label ?? observation.targetNodeId;
+          const busy = resolvingObservationId === observation.id;
+          return <article key={observation.id} className="knowledge-observation"><div className="knowledge-observation-relation"><strong>{source}</strong><span>{observation.relation.replaceAll("_", " ")}</span><strong>{target}</strong></div><div className="knowledge-observation-evidence"><span>{Math.round(observation.confidence * 100)}% confidence · {observation.sourceKind === "prompt" ? "User prompt" : "Agent reply"} · {observation.state}</span><p>“{observation.evidence}”</p></div><div className="knowledge-observation-actions"><button type="button" onClick={() => void resolveObservation(observation, "confirm")} disabled={busy || observation.state === "confirmed"}>{busy ? "Saving…" : observation.state === "confirmed" ? "Confirmed" : "Confirm"}</button><button type="button" className="ghost" onClick={() => void resolveObservation(observation, "reject")} disabled={busy}>Reject</button></div></article>;
+        })}</div>}
+      </section>
       <GraphAccessConfigurator agent={agent} onSaved={() => setReloadToken((value) => value + 1)} />
     </section>
   );

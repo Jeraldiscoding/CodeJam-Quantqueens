@@ -10,11 +10,15 @@ export const demoAgents = {
     id: "d7b3a871-81e1-4965-9a88-bef875c3bb19",
     name: "Release Guardian",
     description: "Maps deployment permissions to customer-data impact.",
+    instructions:
+      "Help users understand release readiness, deployment impact, and which production changes need review. Explain recommendations in operational language.",
   },
   dataSteward: {
     id: "4d5661a8-49e5-4fe7-b430-cb8fd59e0633",
     name: "Data Steward",
     description: "Reviews approved access to shared customer data.",
+    instructions:
+      "Help users understand approved customer-data access, responsible data handling, and when a request needs human review. Keep summaries focused on the user's data task.",
   },
 } as const;
 

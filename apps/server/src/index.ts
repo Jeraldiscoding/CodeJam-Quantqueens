@@ -5,6 +5,7 @@ import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { GraphConfigurationService } from "./graph-configuration.js";
 import { KnowledgeGraphService } from "./knowledge-graph.js";
+import { KnowledgeObservationService } from "./knowledge-observation.js";
 import { MiddlewareDatabase } from "./middleware-database.js";
 import { PolicyService } from "./policy-service.js";
 import { DemoResourceAdapter, ResourceGateway } from "./resource-gateway.js";
@@ -12,6 +13,7 @@ import { KnowledgeGraphRunPolicyGate } from "./run-policy-gate.js";
 import { createRunner } from "./runner-factory.js";
 import { SqliteGovernanceStore } from "./sqlite-governance-store.js";
 import { SqliteGraphStore } from "./sqlite-graph-store.js";
+import { SqliteKnowledgeObservationStore } from "./sqlite-knowledge-observation-store.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -24,9 +26,11 @@ const middlewareDatabase = new MiddlewareDatabase(
 );
 await middlewareDatabase.initialize();
 const graphStore = new SqliteGraphStore(middlewareDatabase);
+const observationStore = new SqliteKnowledgeObservationStore(middlewareDatabase);
+const knowledgeObservations = new KnowledgeObservationService(graphStore, observationStore);
 const governanceStore = new SqliteGovernanceStore(middlewareDatabase);
-const graph = new KnowledgeGraphService(graphStore, config.policyReviewThreshold);
-const graphConfiguration = new GraphConfigurationService(graphStore);
+const graph = new KnowledgeGraphService(graphStore, config.policyReviewThreshold, observationStore);
+const graphConfiguration = new GraphConfigurationService(graphStore, observationStore);
 
 const policy = new PolicyService(graph, graphStore, governanceStore, {
   reviewThreshold: config.policyReviewThreshold,
@@ -44,12 +48,13 @@ const service = new AgentService(
   runner,
   new DemoAgentGraphProvisioner(graphStore),
   config.policyEnforcement ? runPolicyGate : undefined,
+  knowledgeObservations,
 );
 await service.initialize();
 
 const gateway = new ResourceGateway(policy, graphStore, service, new DemoResourceAdapter());
 
-const app = await createApp(config, service, graph, graphConfiguration, policy, gateway);
+const app = await createApp(config, service, graph, graphConfiguration, policy, gateway, knowledgeObservations);
 app.addHook("onClose", () => middlewareDatabase.close());
 
 const shutdown = async (signal: string) => {

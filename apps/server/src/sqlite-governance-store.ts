@@ -188,6 +188,22 @@ export class SqliteGovernanceStore implements GovernanceStore {
     return row ? toApprovalRequest(row) : null;
   }
 
+  async listApprovals(status?: ApprovalRequestRecord["status"]): Promise<ApprovalRequestRecord[]> {
+    if (status) assertOneOf(status, approvalStatuses, "Approval status filter");
+    const rows = (
+      status
+        ? this.database.connection
+            .prepare(
+              "SELECT * FROM approval_requests WHERE status = ? ORDER BY requested_at, id",
+            )
+            .all(status)
+        : this.database.connection
+            .prepare("SELECT * FROM approval_requests ORDER BY requested_at, id")
+            .all()
+    ) as ApprovalRequestRow[];
+    return rows.map(toApprovalRequest);
+  }
+
   async getApprovalEvents(approvalRequestId: string): Promise<ApprovalEventRecord[]> {
     assertNonEmptyText(approvalRequestId, "Approval request ID");
     const rows = this.database.connection

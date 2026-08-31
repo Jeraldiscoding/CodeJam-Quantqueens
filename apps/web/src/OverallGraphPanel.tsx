@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type GraphCatalog, type GraphEdge, type GraphNode } from "./api";
+import { api, type GraphCatalog, type GraphEdge, type GraphNode, type GraphObservation } from "./api";
 
 type OverallTone = "owner" | "peer-agent" | "primary-asset" | "context-asset" | "sensitive-data" | "safe-data";
 
@@ -7,6 +7,10 @@ interface PositionedNode extends GraphNode {
   tone: OverallTone;
   x: number;
   y: number;
+}
+
+interface NetworkEdge extends GraphEdge {
+  observation?: GraphObservation;
 }
 
 const mapWidth = 1180;
@@ -61,7 +65,8 @@ function positionNodes(nodes: GraphNode[]): PositionedNode[] {
   return positioned;
 }
 
-function edgeClass(edge: GraphEdge): string {
+function edgeClass(edge: NetworkEdge): string {
+  if (edge.observation) return "inference";
   if (edge.relation === "OWNS") return "ownership";
   if (edge.relation.startsWith("CAN_")) return "permission";
   if (edge.status !== "authorized") return "context";
@@ -96,7 +101,21 @@ export function OverallGraphPanel() {
   const nodes = useMemo(() => positionNodes(catalog?.nodes ?? []), [catalog]);
   const nodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const selected = (selectedNodeId && nodesById.get(selectedNodeId)) || nodes[0] || null;
-  const visibleEdges = (catalog?.edges ?? []).filter(
+  const allEdges: NetworkEdge[] = [
+    ...(catalog?.edges ?? []),
+    ...(catalog?.observations ?? []).filter((observation) => observation.state !== "rejected").map((observation) => ({
+      id: observation.id,
+      sourceId: observation.sourceNodeId,
+      targetId: observation.targetNodeId,
+      relation: observation.relation,
+      status: "actual" as const,
+      ...(observation.runId ? { runId: observation.runId } : {}),
+      metadata: {},
+      createdAt: observation.createdAt,
+      observation,
+    })),
+  ];
+  const visibleEdges = allEdges.filter(
     (edge) => nodesById.has(edge.sourceId) && nodesById.has(edge.targetId),
   );
 
@@ -114,11 +133,11 @@ export function OverallGraphPanel() {
   return (
     <section className="graph-panel" aria-labelledby="overall-graph-title">
       <header className="graph-panel-header overall-graph-header">
-        <div><span className="eyebrow">Network Graph · Live</span><h2 id="overall-graph-title">Shared relationship map</h2><p>Assets are shared context. Granting an Agent access to one existing asset inherits its downstream impact path.</p></div>
+        <div><span className="eyebrow">Network Graph · Live</span><h2 id="overall-graph-title">Shared relationship map</h2><p>Solid lines are trusted configuration. Dashed lines are relationships learned from prompts and Agent replies, with evidence retained for review.</p></div>
         <div className="overall-graph-counts" aria-label={`${nodes.length} nodes and ${visibleEdges.length} relationships`}><span>{nodes.length} nodes</span><span>{visibleEdges.length} relationships</span></div>
       </header>
       <div className="graph-toolbar">
-        <div className="graph-legend"><span><i className="legend-node legend-agent" /> Agent</span><span><i className="legend-node legend-asset" /> Asset</span><span><i className="legend-line legend-permission" /> Access</span><span><i className="legend-line legend-impact" /> Dependency</span></div>
+        <div className="graph-legend"><span><i className="legend-node legend-agent" /> Agent</span><span><i className="legend-node legend-asset" /> Asset</span><span><i className="legend-line legend-permission" /> Access</span><span><i className="legend-line legend-impact" /> Confirmed dependency</span><span><i className="legend-line legend-inference" /> Learned relationship</span></div>
         <button className="button button-ghost graph-refresh-button" onClick={() => setReloadToken((value) => value + 1)}>Refresh network</button>
       </div>
       <div className="graph-body">
@@ -140,7 +159,7 @@ export function OverallGraphPanel() {
             {nodes.map((node) => <g key={node.id} className={`graph-node graph-node-${node.tone} graph-interactive ${selected.id === node.id ? "selected" : ""}`} role="button" tabIndex={0} aria-label={`Inspect ${node.label}`} aria-pressed={selected.id === node.id} onClick={() => setSelectedNodeId(node.id)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedNodeId(node.id); } }}><circle cx={node.x} cy={node.y} r={radius[node.tone]} /><text className="graph-node-label" x={node.x} y={node.y + radius[node.tone] + 18} textAnchor="middle">{node.label}</text><title>{node.label}</title></g>)}
           </svg>
         </div>
-        <aside className="graph-inspector" aria-live="polite"><span className="eyebrow">Network node</span><div className="inspector-title"><span className={`inspector-dot inspector-${selected.tone}`} /><div><h3>{selected.label}</h3><span>{selected.type.replace("_", " ")}</span></div></div><p>{connectedEdges.length === 0 ? "No stored relationships connect to this node yet." : `${connectedEdges.length} stored relationship${connectedEdges.length === 1 ? "" : "s"} connect this node to the network.`}</p><dl><div><dt>Classification</dt><dd>{selected.classification}</dd></div><div><dt>Risk</dt><dd>{selected.riskWeight} points</dd></div></dl><div className="overall-edge-list">{connectedEdges.map((edge) => <div key={edge.id}><strong>{edge.relation}</strong><span>{edge.sourceId === selected.id ? `to ${nodesById.get(edge.targetId)?.label}` : `from ${nodesById.get(edge.sourceId)?.label}`}</span></div>)}</div></aside>
+        <aside className="graph-inspector" aria-live="polite"><span className="eyebrow">Network node</span><div className="inspector-title"><span className={`inspector-dot inspector-${selected.tone}`} /><div><h3>{selected.label}</h3><span>{selected.type.replace("_", " ")}</span></div></div><p>{connectedEdges.length === 0 ? "No stored relationships connect to this node yet." : `${connectedEdges.length} stored relationship${connectedEdges.length === 1 ? "" : "s"} connect this node to the network.`}</p><dl><div><dt>Classification</dt><dd>{selected.classification}</dd></div><div><dt>Risk</dt><dd>{selected.riskWeight} points</dd></div></dl><div className="overall-edge-list">{connectedEdges.map((edge) => <div key={edge.id}><strong>{edge.relation}{edge.observation ? ` · ${Math.round(edge.observation.confidence * 100)}%` : ""}</strong><span>{edge.sourceId === selected.id ? `to ${nodesById.get(edge.targetId)?.label}` : `from ${nodesById.get(edge.sourceId)?.label}`}</span>{edge.observation && <small>{edge.observation.state} · “{edge.observation.evidence}”</small>}</div>)}</div></aside>
       </div>
     </section>
   );

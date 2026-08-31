@@ -159,4 +159,34 @@ export const middlewareMigrations: readonly MiddlewareMigration[] = [
       ) STRICT;
     `,
   },
+  {
+    version: 3,
+    name: "create_graph_observation_store",
+    sql: `
+      CREATE TABLE graph_observations (
+        id TEXT PRIMARY KEY,
+        agent_node_id TEXT NOT NULL REFERENCES graph_nodes(id) ON DELETE RESTRICT,
+        run_id TEXT,
+        source_node_id TEXT NOT NULL REFERENCES graph_nodes(id) ON DELETE RESTRICT,
+        target_node_id TEXT NOT NULL REFERENCES graph_nodes(id) ON DELETE RESTRICT,
+        relation TEXT NOT NULL CHECK (
+          relation IN ('DEPLOYS_TO', 'PROCESSES', 'CONTAINS', 'READS_FROM', 'CALLS', 'DEPENDS_ON')
+        ),
+        state TEXT NOT NULL CHECK (state IN ('observed', 'confirmed', 'rejected')),
+        confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('prompt', 'run_output')),
+        evidence TEXT NOT NULL CHECK (length(evidence) BETWEEN 1 AND 500),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(agent_node_id, source_node_id, target_node_id, relation)
+      ) STRICT;
+
+      CREATE INDEX graph_observations_agent_idx
+        ON graph_observations(agent_node_id, state, created_at);
+      CREATE INDEX graph_observations_source_idx
+        ON graph_observations(source_node_id, state, created_at);
+      CREATE INDEX graph_observations_run_idx
+        ON graph_observations(run_id, created_at);
+    `,
+  },
 ];

@@ -47,6 +47,11 @@ export class WorkspaceManager {
       agent.instructions ||
         "Help the user complete coding tasks in this workspace. Explain material results concisely.",
       "",
+      "## Answering about this Agent",
+      "",
+      "- If the user asks for your purpose or responsibilities, describe the user-facing purpose and instructions above.",
+      "- Do not list workspace rules, platform guardrails, sandboxing, or backend implementation as responsibilities unless the user specifically asks about safety or system behavior.",
+      "",
       "## Workspace rules",
       "",
       "- Work only inside this workspace unless the user explicitly requests otherwise.",

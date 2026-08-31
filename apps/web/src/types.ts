@@ -1,5 +1,31 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
-export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  | "queued"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface RunPolicySummary {
+  result: "ALLOW" | "DENY" | "REVIEW_REQUIRED";
+  reasonCode: string;
+  intent: "informational" | "action" | "suspicious";
+  intentExplanation: string;
+  riskScore: number;
+  reviewThreshold: number;
+  denyThreshold: number;
+  decisionId: string | null;
+  approvalRequestId: string | null;
+  evaluatedAt: string;
+  riskFactors: Array<{
+    id: string;
+    label: string;
+    riskWeight: number;
+    classification: string;
+    path: string[];
+  }>;
+}
 
 export interface Agent {
   id: string;
@@ -27,6 +53,7 @@ export interface AgentRun {
   id: string;
   agentId: string;
   status: RunStatus;
+  policy?: RunPolicySummary | null;
   prompt: string;
   output: string | null;
   error: string | null;

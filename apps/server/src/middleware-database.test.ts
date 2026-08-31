@@ -57,6 +57,7 @@ describe("MiddlewareDatabase", () => {
       "approval_requests",
       "graph_edges",
       "graph_nodes",
+      "graph_observations",
       "policy_action_claims",
       "policy_decisions",
       "schema_migrations",
@@ -75,6 +76,9 @@ describe("MiddlewareDatabase", () => {
       "graph_edges_run_idx",
       "graph_edges_source_idx",
       "graph_edges_target_idx",
+      "graph_observations_agent_idx",
+      "graph_observations_run_idx",
+      "graph_observations_source_idx",
       "policy_decisions_agent_idx",
       "policy_decisions_run_idx",
     ]);

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, setAuthToken } from "./api";
+import {
+  api,
+  ApiError,
+  setAuthToken,
+  type PromptAnalysis,
+  type PromptGraphSuggestion,
+} from "./api";
 import { KnowledgeGraphPanel } from "./KnowledgeGraphPanel";
 import { OverallGraphPanel } from "./OverallGraphPanel";
 import type { Agent, AgentRun, Message, SystemInfo } from "./types";
@@ -46,6 +52,12 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
+  const [promptReview, setPromptReview] = useState<{
+    content: string;
+    analysis: PromptAnalysis;
+    suggestion: PromptGraphSuggestion;
+  } | null>(null);
+  const [analyzingPrompt, setAnalyzingPrompt] = useState(false);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +113,7 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setPromptReview(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
@@ -223,29 +236,95 @@ export default function App() {
     }
   };
 
-  const sendMessage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!selected || !prompt.trim()) return;
-    const content = prompt.trim();
-    setPrompt("");
+  const resolveApproval = async (approve: boolean) => {
+    if (!selected || !activeRun?.policy?.approvalRequestId) return;
+    const approvalId = activeRun.policy.approvalRequestId;
+    setBusy(true);
     setError(null);
     try {
-      const result = await api.sendMessage(selected.id, content);
-      if (selectedIdRef.current === selected.id) {
+      if (approve) {
+        await api.approveRequest(approvalId, "Approved from the Launchpad console");
+        const resumed = await api.resumeRun(activeRun.id);
+        setActiveRun(resumed.run);
+        await pollRun(resumed.run.id, selected.id);
+      } else {
+        await api.rejectRequest(approvalId, "Rejected from the Launchpad console");
+        const refreshed = await api.run(activeRun.id);
+        setActiveRun(refreshed.run);
+        await refreshAgents();
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await refreshAgents();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dispatchMessage = async (agent: Agent, content: string) => {
+    setError(null);
+    try {
+      const result = await api.sendMessage(agent.id, content);
+      if (selectedIdRef.current === agent.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
       }
       setAgents((current) =>
         current.map((agent) =>
-          agent.id === selected.id ? { ...agent, status: "busy" } : agent,
+          agent.id === result.run.agentId ? { ...agent, status: "busy" } : agent,
         ),
       );
-      await pollRun(result.run.id, selected.id);
+      await pollRun(result.run.id, agent.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setActiveRun(null);
       await refreshAgents();
     }
+  };
+
+  const sendMessage = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selected || !prompt.trim()) return;
+    const content = prompt.trim();
+    setAnalyzingPrompt(true);
+    setError(null);
+    try {
+      const { analysis } = await api.analyzePrompt(selected.id, content);
+      const suggestion = analysis.suggestions[0];
+      setPrompt("");
+      if (suggestion) {
+        setPromptReview({ content, analysis, suggestion });
+        return;
+      }
+      await dispatchMessage(selected, content);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAnalyzingPrompt(false);
+    }
+  };
+
+  const confirmPromptRelationship = async () => {
+    if (!selected || !promptReview) return;
+    const pending = promptReview;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.confirmPromptSuggestion(selected.id, pending.suggestion);
+      setPromptReview(null);
+      await dispatchMessage(selected, pending.content);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continueWithoutRelationship = async () => {
+    if (!selected || !promptReview) return;
+    const content = promptReview.content;
+    setPromptReview(null);
+    await dispatchMessage(selected, content);
   };
 
   const unlock = async (event: React.FormEvent) => {
@@ -562,6 +641,50 @@ export default function App() {
                     </div>
                   </article>
                 )}
+                {activeRun?.status === "awaiting_approval" && activeRun.policy && (
+                  <article className="run-approval">
+                    <div className="run-approval-heading">
+                      <span aria-hidden="true">!</span>
+                      <div>
+                        <strong>This action needs human approval</strong>
+                        <p>
+                          {activeRun.policy.reasonCode === "SUSPICIOUS_REQUEST"
+                            ? activeRun.policy.intentExplanation
+                            : `The reachable systems total ${activeRun.policy.riskScore} risk points, above the review threshold of ${activeRun.policy.reviewThreshold}.`}
+                          {" "}The Agent runtime has not started.
+                        </p>
+                      </div>
+                    </div>
+                    {(activeRun.policy.riskFactors ?? []).length > 0 && (
+                      <div className="run-risk-breakdown" aria-label="Blast radius calculation">
+                        {(activeRun.policy.riskFactors ?? []).map((factor) => (
+                          <div key={factor.id}>
+                            <span>{factor.label}<small>{factor.classification}</small></span>
+                            <strong>+{factor.riskWeight}</strong>
+                          </div>
+                        ))}
+                        <div className="run-risk-total"><span>Total blast radius</span><strong>{activeRun.policy.riskScore}</strong></div>
+                      </div>
+                    )}
+                    <div className="run-approval-actions">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void resolveApproval(true)}
+                      >
+                        Approve and run
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={busy}
+                        onClick={() => void resolveApproval(false)}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </article>
+                )}
                 {activeRun?.status === "failed" && (
                   <article className="run-error">
                     <strong>Run failed</strong>
@@ -570,6 +693,45 @@ export default function App() {
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              {promptReview && (
+                <section className={`prompt-review prompt-review-${promptReview.analysis.intent}`} aria-labelledby="prompt-review-title">
+                  <div className="prompt-review-copy">
+                    <span className="eyebrow">Suggested from your request</span>
+                    <h3 id="prompt-review-title">Confirm what this Agent may access</h3>
+                    <p>{promptReview.suggestion.rationale} Confirming this adds the relationship to the graph so future risk decisions can be calculated automatically.</p>
+                  </div>
+                  <div className="prompt-review-fields">
+                    <label>
+                      Resource
+                      <input value={promptReview.suggestion.label} disabled={Boolean(promptReview.suggestion.existingNodeId)} onChange={(event) => setPromptReview((current) => current ? { ...current, suggestion: { ...current.suggestion, label: event.target.value } } : current)} />
+                    </label>
+                    <label>
+                      Access needed
+                      <select value={promptReview.suggestion.capability} onChange={(event) => setPromptReview((current) => current ? { ...current, suggestion: { ...current.suggestion, capability: event.target.value as PromptGraphSuggestion["capability"] } } : current)}>
+                        <option value="CAN_READ">Read</option>
+                        <option value="CAN_WRITE">Write or change</option>
+                        <option value="CAN_CALL">Call or deploy</option>
+                        <option value="CAN_USE">Use credential</option>
+                      </select>
+                    </label>
+                    <label>
+                      Data sensitivity
+                      <select disabled={Boolean(promptReview.suggestion.existingNodeId)} value={promptReview.suggestion.classification} onChange={(event) => setPromptReview((current) => current ? { ...current, suggestion: { ...current.suggestion, classification: event.target.value as PromptGraphSuggestion["classification"] } } : current)}>
+                        <option value="public">Public</option>
+                        <option value="internal">Internal</option>
+                        <option value="confidential">Confidential</option>
+                        <option value="restricted">Restricted</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="prompt-review-actions">
+                    <button className="button button-primary" type="button" onClick={() => void confirmPromptRelationship()} disabled={busy || !promptReview.suggestion.label.trim()}>{busy ? <Spinner /> : "Confirm and continue"}</button>
+                    <button className="button button-ghost" type="button" onClick={() => void continueWithoutRelationship()} disabled={busy}>Not a protected resource</button>
+                  </div>
+                  <p className="prompt-review-note">Nothing is added silently. You can change the suggested access and sensitivity before continuing.</p>
+                </section>
+              )}
 
               <form className="composer" onSubmit={sendMessage}>
                 <textarea
@@ -589,21 +751,26 @@ export default function App() {
                   disabled={
                     selected.status === "stopped" ||
                     selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
+                    activeRun != null &&
+                      ["queued", "running", "awaiting_approval"].includes(activeRun.status) ||
+                    promptReview != null
                   }
                   rows={3}
                 />
                 <div className="composer-footer">
                   <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
+                    {analyzingPrompt ? "Understanding request…" : `Enter to send · Shift + Enter for newline · ${system?.codexSandboxMode ?? "checking sandbox"}`}
                   </span>
                   <button
                     className="send-button"
                     disabled={
                       !prompt.trim() ||
+                      analyzingPrompt ||
+                      promptReview != null ||
                       selected.status === "stopped" ||
                       selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
+                      (activeRun != null &&
+                        ["queued", "running", "awaiting_approval"].includes(activeRun.status))
                     }
                     aria-label="Send message"
                   >

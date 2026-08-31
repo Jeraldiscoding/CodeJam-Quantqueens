@@ -17,8 +17,27 @@ credentials, personal data, or exploit details in an issue.
 - Ordinary local containers, not hardened multi-tenant sandboxes
 - Broad outbound network access
 - Prompt-triggered command and file execution
+- Unconfirmed prompt-derived observations can affect the same Agent's risk
+  before review; they are text claims, not trusted runtime telemetry
+- No per-tool interception after an allowed Codex Run starts
+- No API rate limiting or operator lockout
+- Production dependency audit currently reports unresolved high-severity items;
+  see the full audit before exposing the service
 - Ark key available to the server and active Runtime container
 - Ark key stored in Terraform POC state
+
+## Recently verified controls
+
+- API authentication uses the matched route and a canonical pathname fallback;
+  encoded unauthenticated GET and POST probes return `401`.
+- Learned relationship traversal filters by the owning Agent and source node;
+  one Agent's prompt observation cannot enter another Agent's Blast Radius.
+- Regression coverage for both controls is part of the 82-test server suite.
+
+These controls fix two concrete audit findings but do not turn the POC into a
+multi-tenant security boundary. Remaining work is prioritized in the
+[full audit](docs/FULL_HACKATHON_CODEBASE_AUDIT.md) and
+[session report](docs/SESSION_IMPLEMENTATION_REPORT.md).
 
 ## Safe use
 

@@ -2,6 +2,10 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json

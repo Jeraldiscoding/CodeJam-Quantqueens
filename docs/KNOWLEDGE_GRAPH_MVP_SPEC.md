@@ -1,13 +1,26 @@
 # Knowledge Graph MVP Specification
 
+For an educational walkthrough of the current implementation, the distinction
+between LLM output and deterministic relationship extraction, completed test
+evidence, and prioritized gaps, see the
+[Session Implementation Report](SESSION_IMPLEMENTATION_REPORT.md).
+
+Current hardening status (2026-08-31): the encoded-path authentication bypass
+and cross-Agent observation contamination found by the full audit are fixed.
+Post-fix validation passes 17 test files and 82 tests. Learned observations are
+now filtered by their owning Agent in both exact-action and whole-Agent
+traversal.
+
 ## Goal
 
 Build a small, queryable graph that explains an Agent's indirect impact. It is
 not only an access-control list: the graph connects an Agent's permitted action
 to the systems, data, and classification it can affect.
 
-The graph never invents facts or grants permission through an inferred path.
-It finds paths through explicitly stored, typed relationships.
+The graph has two trust layers. Direct permissions are explicit, authorized
+facts and are never inferred. Operational knowledge can be learned from user
+prompts and completed Agent replies, with confidence, evidence, provenance,
+and review state attached to every observation.
 
 ## Core intuition and hackathon fit
 
@@ -75,22 +88,64 @@ Implemented:
 - A seeded, presentation-only Impact Map and textual explanation.
 - SQLite graph persistence, migrations, policy-decision records, approval state,
   and one-time action claims.
+- A trusted `PolicyService` that scores every protected action against the
+  graph and records the verdict.
+- A Resource Gateway HTTP prototype that is the only supported path for its
+  protected read, write, API-call, and credential-handle adapters. Codex does
+  not yet invoke it automatically.
+- A pre-run policy gate that blocks or pauses a Run before `runner.run()`.
+- Deterministic prompt-intent analysis: explanation-only requests run without
+  blast-radius approval, actionable requests use graph policy, and suspicious
+  requests require review when the Agent has a protected capability.
+- Prompt-assisted asset and access suggestions that become graph facts only
+  after an operator confirms the resource, access type, and classification.
+- Automatic semantic relationship extraction from prompts and completed Agent
+  replies for `DEPLOYS_TO`, `PROCESSES`, `CONTAINS`, `READS_FROM`, `CALLS`, and
+  `DEPENDS_ON` observations.
+- Persisted observation confidence, evidence, source Run, source kind, and
+  `observed / confirmed / rejected` review state.
+- Conservative traversal through observed knowledge: it may increase risk but
+  can never create a direct Agent capability.
+- Agent-scoped observation traversal: shared trusted topology stays global,
+  while learned evidence affects only the Agent that supplied it.
+- Run-correlated `ATTEMPTED`, `TOUCHED`, and `DENIED` evidence.
+- Human approval routes, request-hash binding, and one-time resumption.
 
 Planned integration:
 
-- Direct protected-action checks through a Resource Gateway.
-- Automatic Run-correlated attempted, successful, and denied evidence.
 - Safe LLM context derived from a Run's graph snapshot.
-- Authenticated human approval routes and resumption of an approved action.
-- API/SQLite-backed Impact Map data in the Web UI.
+- A dedicated reviewer console beyond the in-chat approval banner.
 
 Not included:
 
-- Automatic relationship extraction from documents or LLM output.
+- Document and repository ingestion beyond text seen in prompts and completed
+  Agent replies.
+- Embedding similarity, model training, or probabilistic link prediction. The
+  current extractor is deterministic and bounded.
 - Group, team, delegated, or inherited permissions.
 - Community detection.
 - Arbitrary Codex shell/filesystem interception.
+- A unified ordered Run-event recorder, execution replay, or circuit breaker.
+- Agent-to-Agent delegation and reverse affected-Agent queries.
 - Real credential values.
+
+### Next implementation order
+
+1. Keep low-trust prompt observations quarantined until confirmation, or give
+   them a separate conservative review-only effect. A denied prompt must not
+   silently reshape later enforcement.
+2. Upgrade the vulnerable production dependencies reported by `npm audit` and
+   rerun the complete test/build/Docker/authentication matrix.
+3. Add a durable ordered `run_events` model and connect one real allowlisted
+   runtime tool to `ResourceGateway` so attempted, denied, and completed actions
+   are observable and enforceable.
+4. Bind decisions and approvals to authenticated human identities with RBAC
+   and requester/approver separation.
+5. Add browser integration and accessibility tests for the graph, focus-path,
+   prompt suggestion, and approval flows.
+6. After runtime events exist, add reverse reachability, intentional
+   Agent-to-Agent delegation, evidence freshness/contradiction handling, and a
+   persistent circuit breaker.
 
 ## Data model
 
@@ -125,9 +180,9 @@ All edges have `id`, `sourceId`, `targetId`, `relation`, `status`, optional
 
 ## Rules
 
-### Planned Resource Gateway contract
+### Resource Gateway contract
 
-When the Resource Gateway is implemented, it must require a live, eligible
+The Resource Gateway requires a live, eligible
 platform Agent, a Run owned by that Agent, an authenticated actor, and this
 exact direct edge:
 
@@ -205,10 +260,9 @@ configuration, Agent lifecycle, and route shapes remain adapter-independent.
 runtime.
 
 `SqliteGovernanceStore` also implements durable policy decisions, approval
-transitions, and single-use execution claims. It is tested in isolation but is
-not yet constructed by server startup or exposed through routes. A trusted
-`PolicyService` and Resource Gateway must be added before this persistence
-foundation becomes operational approval middleware.
+transitions, and single-use execution claims. It is constructed at startup and
+driven by `PolicyService`, which is the only component permitted to decide
+whether a protected action may run.
 
 Useful existing code:
 
@@ -221,7 +275,11 @@ Useful existing code:
 | `apps/server/src/sqlite-graph-store.ts` | authoritative graph persistence adapter |
 | `apps/server/src/sqlite-governance-store.ts` | policy, approval, and claim persistence adapter |
 | `apps/server/src/json-graph-store.ts` | legacy local reference adapter |
-| `apps/server/src/app.ts` | server graph routes that the frontend/integration can consume |
+| `apps/server/src/policy-service.ts` | the only component that decides whether a protected action may run |
+| `apps/server/src/policy-hash.ts` | canonical request hashing and Agent graph revision digests |
+| `apps/server/src/resource-gateway.ts` | the single execution boundary and its swappable `ResourceAdapter` |
+| `apps/server/src/run-policy-gate.ts` | pre-run enforcement injected into `AgentService` |
+| `apps/server/src/app.ts` | server graph and policy routes that the frontend/integration can consume |
 
 ### SQLite database invariants
 
@@ -261,10 +319,9 @@ clock for expiry, and consumes an approved review only once.
 - Legacy non-demo JSON graph facts are not imported automatically.
 - Database and graph API tests use temporary file-backed SQLite databases,
   never the developer's real `APP_DATA_DIR/middleware.db`.
-- `SqliteGovernanceStore` is implemented and tested but remains intentionally
-  unwired until a trusted policy/gateway layer supplies Run ownership, policy
-  provenance, live-Agent eligibility, authenticated approvers, request hashing,
-  and audit emission.
+- `SqliteGovernanceStore` is wired through `PolicyService`, which supplies Run
+  ownership, policy provenance, live-Agent eligibility, server-derived approver
+  identity, request hashing, and audit emission.
 - The Web Impact Map reads the selected Agent graph and Blast Radius from the
   live API. The Network Graph view reads the whole shared topology.
 
@@ -277,6 +334,9 @@ The current routes are ready and should retain their behaviour:
 | `GET /api/agents/:id/blast-radius` | score, threshold, decision, and scored targets |
 | `POST /api/graph/nodes` | create an explicit human, asset, or data-category fact |
 | `POST /api/agents/:id/graph/relationships` | add an explicit, validated relationship in that Agent’s connected graph |
+| `GET /api/agents/:id/observations` | learned relationships with confidence, evidence, provenance, and review state |
+| `POST /api/agents/:id/observations/:observationId/confirm` | promote an observation to confirmed knowledge without granting permission |
+| `POST /api/agents/:id/observations/:observationId/reject` | exclude an incorrect observation from traversal |
 
 Do not let the LLM write directly to either table. It may return a suggested
 configuration draft, but a human or trusted integration submits approved facts
@@ -289,7 +349,7 @@ asset-relationship edges.
 
 ### Configuration and inference flow
 
-The server exposes a bounded, semi-inferred authoring flow:
+The server exposes two bounded flows:
 
 1. A user selects an existing asset or supplies a new asset name and
    classification.
@@ -298,6 +358,20 @@ The server exposes a bounded, semi-inferred authoring flow:
 3. The user confirms the Agent's direct `CAN_*` access.
 4. Traversal infers reachable assets, downstream paths, aggregate risk, and the
    resulting review decision from the stored shared topology.
+
+For knowledge discovery, the server also:
+
+1. Scans each submitted prompt and completed Agent reply for explicit
+   resource-to-resource statements.
+2. Reuses exact-label nodes or creates clearly marked inferred nodes.
+3. Stores the relationship separately in `graph_observations`, including its
+   evidence excerpt, confidence, Run, and source kind.
+4. Includes `observed` and `confirmed` relationships in downstream traversal.
+5. Removes `rejected` relationships from traversal while retaining the record.
+
+This path cannot emit `OWNS` or `CAN_*`. Inferred knowledge is allowed to make
+a decision more cautious, but proximity and observation never authorize an
+Agent action.
 
 Only `OWNS`, `CAN_*`, `DEPLOYS_TO`, `PROCESSES`, and `CONTAINS` are writable.
 Capabilities must run from the selected Agent directly to an asset. Downstream
@@ -309,6 +383,16 @@ The Web UI implements this flow for direct Agent access and previews the
 inferred consequence before saving. An LLM may propose a configuration draft,
 but cannot create or approve an authority-bearing edge. A human or trusted
 infrastructure integration must submit that final relationship fact.
+
+The Impact Map makes path selection explainable. It initially focuses the
+highest-weight reachable protected asset, using label order as a stable
+tie-breaker. The displayed route is the first deterministic shortest path
+found by the bounded breadth-first traversal: it begins with a stored,
+authorized `CAN_*` edge and then follows trusted topology or non-rejected
+knowledge observations. Selecting another scored asset in the graph or score
+equation focuses that asset's stored route. This visual focus does not change
+the aggregate Blast Radius, which continues to count every reachable protected
+asset once.
 
 ### Startup wiring
 
@@ -327,14 +411,54 @@ know which persistence implementation is in use.
 | `GET /api/agents/:id/blast-radius` | score, threshold, decision, scored assets, and explainable paths |
 | `POST /api/graph/nodes` | create a node with optional classification-derived risk defaults |
 | `POST /api/agents/:id/graph/relationships` | persist an explicit direct capability or validated topology fact |
+| `POST /api/agents/:id/prompt-analysis` | classify intent and return confirmable graph suggestions |
+| `POST /api/agents/:id/graph/suggestions/confirm` | create or reuse the suggested asset and persist confirmed access |
+| `GET /api/agents/:id/observations` | list learned relationship evidence for review |
+| `POST /api/agents/:id/observations/:observationId/confirm` | mark learned knowledge as confirmed |
+| `POST /api/agents/:id/observations/:observationId/reject` | reject and exclude learned knowledge |
 
-## Planned protected-action API
+## Protected-action API
 
-The Resource Gateway will need a protected-action route plus decision lookup,
-approval, and rejection routes. Those routes must derive actor identity and
-timestamps on the server, verify the Agent is still live and eligible, verify
-Run ownership, and correlate decisions with `ATTEMPTED`, `TOUCHED`, and
-`DENIED` graph evidence.
+These routes derive actor identity and timestamps on the server, verify the
+Agent is live and eligible, verify Run ownership, and correlate every decision
+with `ATTEMPTED`, `TOUCHED`, and `DENIED` graph evidence.
+
+| Route | Result |
+| --- | --- |
+| `POST /api/runs/:id/actions` | evaluate and, when allowed, execute one protected action |
+| `POST /api/runs/:id/actions/resume` | execute an approved action exactly once |
+| `POST /api/runs/:id/resume` | resume a Run the pre-run gate paused |
+| `GET /api/runs/:id/policy` | every decision recorded for that Run |
+| `GET /api/policy/decisions/:id` | one decision with its approval state and events |
+| `GET /api/policy/approvals?status=pending` | the human review queue |
+| `POST /api/policy/approvals/:id/approve` | approve a pending review |
+| `POST /api/policy/approvals/:id/reject` | reject a pending review |
+
+### Decision rule
+
+A protected action is scored on the assets reachable *through that one
+capability edge*, not the Agent's whole surface. Missing the exact authorized
+`agent --CAN_*--> asset` edge is an immediate `DENY`, whatever the score.
+Otherwise the score is compared with two thresholds: above the deny threshold
+returns `DENY`, above the review threshold returns `REVIEW_REQUIRED`, and
+anything else returns `ALLOW`.
+
+The pre-run gate first classifies prompt intent. Clearly informational requests
+receive `ALLOW / INFORMATIONAL_REQUEST` with a zero action score and an
+explanation-only runtime instruction. Action requests use the graph rule above.
+Suspicious signals force `REVIEW_REQUIRED` below the normal review threshold;
+the deny threshold and missing-capability denial still take precedence. This is
+a deterministic POC classifier, not a semantic guarantee or a substitute for
+per-tool enforcement.
+
+### Approval binding
+
+Each decision stores a SHA-256 request hash over the policy version, Run ID,
+Agent node, capability, target, request payload, and a digest of the Agent's
+authorized subgraph. Execution recomputes that hash from the live graph. An
+approval therefore cannot be spent on a different Run, a different payload, or
+after a permission or risk weight has changed. Claims are single use, so an
+approved action executes exactly once.
 
 ## Minimum acceptance tests
 
@@ -346,7 +470,23 @@ Run ownership, and correlate decisions with `ATTEMPTED`, `TOUCHED`, and
 - SQLite migrations, foreign keys, approval expiry, operation idempotency, and
   one-time claims are covered by temporary file-backed tests.
 
-Future Resource Gateway acceptance must additionally prove that a missing exact
-capability is denied, high-risk execution pauses for approval, rejection and
-expiry prevent execution, and attempt/outcome evidence shares the correct Run
-and policy decision correlation.
+Enforcement acceptance, covered by `policy-service.test.ts` and
+`policy-api.test.ts`:
+
+- A missing exact capability is denied even when the asset is reachable.
+- A high blast radius pauses the Run before `runner.run()` is called.
+- Explanation-only prompts bypass blast-radius review, while suspicious prompts
+  force review even when their graph score is otherwise low.
+- Prompt inference is read-only until an operator confirms a suggestion.
+- Semantic relationship observations retain evidence and confidence, affect
+  risk only when reachable from explicit authority, and cannot create `CAN_*`.
+- Encoded API paths require the same authentication as their decoded matched
+  routes for both reads and mutations.
+- Two Agents sharing an asset do not share Agent-owned observations; only the
+  observing Agent follows its learned dependency.
+- Rejection, expiry, a changed payload, and a changed graph revision all
+  prevent execution.
+- An approved action executes exactly once; a replay is refused.
+- `ATTEMPTED`, `TOUCHED`, and `DENIED` evidence carries the correct Run and
+  decision correlation, and never alters the Blast Radius score.
+- `CAN_USE` returns a scoped, expiring handle rather than a credential value.

@@ -46,6 +46,10 @@ const envSchema = z.object({
     .default("https://ark.cn-beijing.volces.com/api/v3"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   SEED_DEMO_DATA: z.enum(["true", "false"]).optional(),
+  POLICY_REVIEW_THRESHOLD: z.coerce.number().int().min(0).default(20),
+  POLICY_DENY_THRESHOLD: z.coerce.number().int().min(0).default(40),
+  POLICY_APPROVAL_TTL_MS: z.coerce.number().int().min(1_000).default(900_000),
+  POLICY_ENFORCEMENT: z.enum(["on", "off"]).default("on"),
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -53,6 +57,11 @@ export type AppConfig = ReturnType<typeof loadConfig>;
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
+  if (env.POLICY_DENY_THRESHOLD < env.POLICY_REVIEW_THRESHOLD) {
+    throw new Error(
+      "POLICY_DENY_THRESHOLD must not be lower than POLICY_REVIEW_THRESHOLD",
+    );
+  }
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
   if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
@@ -93,6 +102,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       env.SEED_DEMO_DATA === undefined
         ? env.NODE_ENV === "development"
         : env.SEED_DEMO_DATA === "true",
+    policyEnforcement: env.POLICY_ENFORCEMENT === "on",
+    policyReviewThreshold: env.POLICY_REVIEW_THRESHOLD,
+    policyDenyThreshold: env.POLICY_DENY_THRESHOLD,
+    policyApprovalTtlMs: env.POLICY_APPROVAL_TTL_MS,
   };
 }
 

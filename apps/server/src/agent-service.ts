@@ -4,6 +4,8 @@ import { demoAgents } from "./demo-graph.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import type { RunPolicyGate } from "./run-policy-gate.js";
+import type { KnowledgeObservationService } from "./knowledge-observation.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -11,11 +13,14 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RunPolicySummary,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+const legacyDemoInstructions =
+  "Explain graph relationships clearly. Treat graph context as risk evidence, not permission to access anything beyond approved tools.";
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -27,6 +32,8 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly graphProvisioner?: AgentGraphProvisioner,
+    private readonly runPolicyGate?: RunPolicyGate,
+    private readonly knowledgeObserver?: KnowledgeObservationService,
   ) {}
 
   async initialize(): Promise<void> {
@@ -34,7 +41,11 @@ export class AgentService {
     await this.workspaces.initialize();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
-        if (run.status === "queued" || run.status === "running") {
+        if (
+          run.status === "queued" ||
+          run.status === "running" ||
+          run.status === "awaiting_approval"
+        ) {
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
           run.completedAt = now();
@@ -173,6 +184,7 @@ export class AgentService {
       id: runId,
       agentId,
       status: "queued",
+      policy: null,
       prompt,
       output: null,
       error: null,
@@ -200,6 +212,15 @@ export class AgentService {
       if (storedAgent.status === "busy") {
         throw new HttpError(409, "This Agent is already running");
       }
+      const paused = database.runs.find(
+        (item) => item.agentId === agentId && item.status === "awaiting_approval",
+      );
+      if (paused) {
+        throw new HttpError(
+          409,
+          "This Agent has a run waiting on a human approval. Approve or reject it first.",
+        );
+      }
       database.runs.push(run);
       database.messages.push(message);
       const snapshot = structuredClone(storedAgent);
@@ -208,6 +229,9 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
+    if (this.knowledgeObserver) {
+      await this.captureKnowledge(agentId, runId, "prompt", prompt);
+    }
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -239,7 +263,70 @@ export class AgentService {
     };
   }
 
-  private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+  /**
+   * Resumes a Run that the policy gate paused. The approval is spent here, and
+   * spending it fails if the Agent graph changed after the human approved.
+   */
+  async resumeRun(runId: string): Promise<AgentRun> {
+    const run = this.getRun(runId);
+    if (run.status !== "awaiting_approval") {
+      throw new HttpError(409, `Run ${runId} is ${run.status} and is not awaiting approval`);
+    }
+    if (!this.runPolicyGate) {
+      throw new HttpError(503, "No policy gate is configured on this server");
+    }
+    const agent = this.getAgent(run.agentId);
+    if (agent.status === "stopped") {
+      throw new HttpError(409, "Start the Agent before resuming this run");
+    }
+    if (agent.status === "busy") {
+      throw new HttpError(409, "This Agent is already running");
+    }
+
+    await this.runPolicyGate.authorizeResume({
+      runId: run.id,
+      agentId: agent.id,
+      prompt: run.prompt,
+    });
+
+    const agentAtStart = await this.store.mutate((database) => {
+      const storedAgent = database.agents.find((item) => item.id === agent.id);
+      if (!storedAgent) throw new HttpError(404, "Agent not found");
+      const snapshot = structuredClone(storedAgent);
+      storedAgent.status = "busy";
+      storedAgent.lastError = null;
+      storedAgent.updatedAt = now();
+      return snapshot;
+    });
+
+    const execution = this.executeRun(agentAtStart, run, { skipPolicyGate: true });
+    this.activeExecutions.set(agent.id, execution);
+    void execution
+      .finally(() => {
+        if (this.activeExecutions.get(agent.id) === execution) {
+          this.activeExecutions.delete(agent.id);
+        }
+      })
+      .catch(() => undefined);
+    return this.getRun(runId);
+  }
+
+  /**
+   * Closes a paused Run after a human refused it. Called by the approval
+   * routes so a rejection actually ends the Run instead of leaving it hanging.
+   */
+  async rejectPendingRun(runId: string, reason: string): Promise<AgentRun | null> {
+    const run = this.store.snapshot().runs.find((item) => item.id === runId);
+    if (!run || run.status !== "awaiting_approval") return null;
+    await this.finishBlockedRun(run.agentId, runId, run.policy ?? null, reason);
+    return this.getRun(runId);
+  }
+
+  private async executeRun(
+    agentAtStart: Agent,
+    run: AgentRun,
+    options: { skipPolicyGate?: boolean } = {},
+  ): Promise<void> {
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
@@ -247,6 +334,12 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
+
+    if (!options.skipPolicyGate) {
+      const gated = await this.applyRunPolicy(agentAtStart, run);
+      if (!gated) return;
+    }
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
@@ -254,10 +347,11 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
+        prompt: this.runtimePrompt(run),
         threadId: agentAtStart.codexThreadId,
       });
       const completedAt = now();
+      await this.captureKnowledge(agentAtStart.id, run.id, "run_output", result.output);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -302,6 +396,124 @@ export class AgentService {
     }
   }
 
+  private async captureKnowledge(
+    agentId: string,
+    runId: string,
+    sourceKind: "prompt" | "run_output",
+    text: string,
+  ): Promise<void> {
+    if (!this.knowledgeObserver) return;
+    try {
+      await this.knowledgeObserver.observeText({ agentId, runId, sourceKind, text });
+    } catch {
+      // Learning is supplementary evidence. A failed extraction must never
+      // block or fail the user's Agent run.
+    }
+  }
+
+  /**
+   * Runs the pre-run policy check. Returns false when the Run must not reach
+   * the runner, having already recorded the outcome on the Run itself.
+   */
+  private async applyRunPolicy(agentAtStart: Agent, run: AgentRun): Promise<boolean> {
+    if (!this.runPolicyGate) return true;
+
+    let summary: RunPolicySummary;
+    try {
+      summary = await this.runPolicyGate.evaluateRun({
+        runId: run.id,
+        agentId: agentAtStart.id,
+        prompt: run.prompt,
+      });
+    } catch (reason) {
+      // A policy layer that cannot reach a verdict must fail closed.
+      const detail = reason instanceof Error ? reason.message : String(reason);
+      await this.finishBlockedRun(
+        agentAtStart.id,
+        run.id,
+        null,
+        `Policy evaluation failed, so this run was not started: ${detail}`,
+      );
+      return false;
+    }
+
+    if (summary.result === "ALLOW") {
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) storedRun.policy = summary;
+      });
+      return true;
+    }
+
+    if (summary.result === "DENY") {
+      const denialDetail = summary.reasonCode === "RISK_ABOVE_DENY_THRESHOLD"
+        ? `blast radius ${summary.riskScore} exceeds the deny threshold of ${summary.denyThreshold}`
+        : summary.intentExplanation;
+      await this.finishBlockedRun(
+        agentAtStart.id,
+        run.id,
+        summary,
+        `Policy denied this run (${summary.reasonCode}): ${denialDetail}.`,
+      );
+      return false;
+    }
+
+    const completedAt = now();
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === run.id);
+      const agent = database.agents.find((item) => item.id === agentAtStart.id);
+      if (storedRun) {
+        storedRun.status = "awaiting_approval";
+        storedRun.policy = summary;
+        storedRun.error = null;
+      }
+      if (agent && agent.status !== "stopped") {
+        agent.status = "ready";
+        agent.lastError = null;
+        agent.updatedAt = completedAt;
+      }
+    });
+    return false;
+  }
+
+  private async finishBlockedRun(
+    agentId: string,
+    runId: string,
+    summary: RunPolicySummary | null,
+    message: string,
+  ): Promise<void> {
+    const completedAt = now();
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === runId);
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (storedRun) {
+        storedRun.status = "failed";
+        storedRun.error = message;
+        storedRun.policy = summary;
+        storedRun.completedAt = completedAt;
+      }
+      if (agent && agent.status !== "stopped") {
+        // A refusal is a correct outcome, not an Agent malfunction.
+        agent.status = "ready";
+        agent.lastError = message;
+        agent.updatedAt = completedAt;
+      }
+    });
+  }
+
+  private runtimePrompt(run: AgentRun): string {
+    const policy = this.getRun(run.id).policy;
+    if (policy?.intent !== "informational") return run.prompt;
+    return [
+      "Request mode: explanation only.",
+      "Answer the user's question without editing files or running mutating commands.",
+      "Keep the answer focused on the Agent's user-facing purpose. Do not present internal guardrails as responsibilities unless asked.",
+      "",
+      "User request:",
+      run.prompt,
+    ].join("\n");
+  }
+
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {
     return this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
@@ -343,14 +555,25 @@ export class AgentService {
     if (!this.config.seedDemoData) return;
     let seededNewAgent = false;
     for (const demo of Object.values(demoAgents)) {
-      if (this.store.snapshot().agents.some((agent) => agent.id === demo.id)) continue;
+      const existing = this.store.snapshot().agents.find((agent) => agent.id === demo.id);
+      if (existing) {
+        if (existing.instructions === legacyDemoInstructions) {
+          const upgraded = await this.store.mutate((database) => {
+            const agent = database.agents.find((item) => item.id === demo.id)!;
+            agent.instructions = demo.instructions;
+            agent.updatedAt = now();
+            return structuredClone(agent);
+          });
+          await this.workspaces.writeInstructions(upgraded);
+        }
+        continue;
+      }
       const timestamp = now();
       const demoAgent: Agent = {
         id: demo.id,
         name: demo.name,
         description: demo.description,
-        instructions:
-          "Explain graph relationships clearly. Treat graph context as risk evidence, not permission to access anything beyond approved tools.",
+        instructions: demo.instructions,
         status: "ready",
         workspacePath: this.workspaces.workspacePath(demo.id),
         codexThreadId: null,

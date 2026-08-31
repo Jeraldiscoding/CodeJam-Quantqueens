@@ -9,7 +9,8 @@ Volcengine ECS.
 
 > [!WARNING]
 > This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
+> verified individual identity or hardened sandbox middleware. It includes POC
+> policy decisions and audit evidence, but do not use production data or
 > credentials. See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
@@ -29,8 +30,50 @@ Volcengine ECS.
 - Fastify control plane with asynchronous Run state
 - Persistent Agent workspaces and Codex sessions
 - SQLite-backed Knowledge Graph and governance persistence
+- Prompt-assisted access configuration and Agent-scoped learned relationships
+- Explainable Blast Radius paths and pre-run allow/review/deny decisions
+- Expiring, graph-bound approvals with atomic one-time claims
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
+
+## Current middleware status and next work
+
+The current implementation is a working **pre-run graph-risk policy
+prototype**. It can infer non-authoritative resource relationships from prompt
+and final-response text, calculate indirect impact, and prevent Codex from
+starting until a risky Run is approved. Direct `CAN_*` permissions are never
+silently inferred and still require explicit confirmation.
+
+Two defects found during the full audit are now fixed:
+
+- percent-encoded API paths cannot bypass bearer authentication;
+- learned observations are scoped to the Agent that supplied the evidence,
+  even when multiple Agents share the same asset node.
+
+The post-fix validation passed 17 test files and 82 tests, both TypeScript
+builds, the production Docker build, live Docker authentication probes, and a
+compiled SQLite isolation reproduction. The container reached healthy status
+on port 3000.
+
+Work should continue in this order:
+
+1. Quarantine unconfirmed prompt observations so a denied or misleading prompt
+   cannot immediately influence enforcement.
+2. Upgrade and re-audit the vulnerable production dependency chain, especially
+   the Fastify/static packages identified in the audit.
+3. Route one real protected Agent action through `ResourceGateway` and persist
+   ordered attempted, allowed/denied, and completed Run events.
+4. Add authenticated human identity, RBAC, and separation between requester
+   and approver instead of relying on one shared application token.
+5. Add Playwright coverage for the judge flow, approval UI, graph interaction,
+   keyboard accessibility, and responsive layouts.
+6. Then add Agent-to-Agent delegation, reverse-impact queries, observation
+   trust/freshness, and a persistent circuit breaker driven by Run events.
+
+Do not claim full per-tool runtime enforcement, a flight recorder, replay, or
+a circuit breaker yet. See the [full audit](docs/FULL_HACKATHON_CODEBASE_AUDIT.md)
+and [session implementation report](docs/SESSION_IMPLEMENTATION_REPORT.md) for
+the evidence, implementation details, and extended roadmap.
 
 ## Requirements
 
@@ -292,10 +335,10 @@ shutdown. Focused adapters can share that connection; services and routes must
 not query SQLite directly.
 
 ```text
-KnowledgeGraphService               future PolicyService / Resource Gateway
+KnowledgeGraphService                      PolicyService / Resource Gateway
 GraphConfigurationService                         |
           |                                       |
-      GraphStore                     GovernanceStore (not wired)
+      GraphStore                          GovernanceStore
           |                                       |
   SqliteGraphStore            SqliteGovernanceStore (implemented/tested)
           `-------------------.-------------------'
@@ -321,6 +364,19 @@ classification of a new asset, and the Agent's direct access. Risk defaults are
 inferred from classification, while reachable assets, downstream paths, and
 Blast Radius are inferred from the shared topology. The Network Graph tab reads
 `GET /api/graph` and shows all stored nodes and relationships together.
+The Impact Map automatically focuses the deterministic shortest evidence route
+to the highest-weight protected asset. Its footer explains why that path
+was chosen, displays every node and relationship in the route, and lets the
+user focus a different scored asset without changing the aggregate score.
+
+The server also learns non-authoritative relationships from explicit statements
+in user prompts and completed Agent replies. Learned edges retain their source
+Run, evidence excerpt, confidence, and review state. They are drawn as dashed
+relationships in the Network Graph and appear in the Impact Map's inline
+review queue. Observed or confirmed relationships can conservatively increase
+downstream risk; rejected relationships are ignored. This learning path cannot
+create `CAN_READ`, `CAN_WRITE`, `CAN_CALL`, or `CAN_USE`, so it can never grant
+an Agent access.
 
 The current schema is deliberately split by responsibility:
 
@@ -328,6 +384,7 @@ The current schema is deliberately split by responsibility:
 | --- | --- |
 | `schema_migrations` | Applied migration versions and immutable checksums |
 | `graph_nodes`, `graph_edges` | `SqliteGraphStore`: identities, assets, permissions, impact, and audit facts |
+| `graph_observations` | Learned resource relationships with confidence, evidence, Run provenance, and review state |
 | `policy_decisions` | `SqliteGovernanceStore`: immutable `ALLOW`, `DENY`, or `REVIEW_REQUIRED` evaluations |
 | `approval_requests`, `approval_events` | Pending review state plus append-only approval history |
 | `policy_action_claims` | Atomic, single-use permission to execute an already allowed or approved action |
@@ -373,7 +430,7 @@ The governance store already enforces these persistence rules:
 - Transaction callbacks are synchronous and short; they never remain open
   while waiting for a human or an external action.
 
-The future `PolicyService` must canonicalize the protected request and compute
+The `PolicyService` canonicalizes the protected request and computes
 its lowercase SHA-256 hash consistently; the store validates and binds that
 caller-supplied digest but does not calculate it. It must also verify live-Agent
 eligibility and Run ownership before recording a decision. Resolution and claim
@@ -393,14 +450,10 @@ ATTEMPTED
 ```
 
 > [!IMPORTANT]
-> The SQLite governance persistence adapter and its transition methods are
-> implemented and tested in isolation, but the server does not yet instantiate
-> or expose them. The existing Playground does not send protected actions
-> through a `PolicyService` or Resource Gateway. Consequently, the current Blast Radius
-> endpoint can return `REVIEW_REQUIRED`, but it does not yet pause a Run, create
-> a decision automatically, expose an approval route, or emit audit edges. Those
-> integration points are the next middleware layer; do not claim end-to-end
-> enforcement until they are wired and tested.
+> The server now wires policy decisions, approval routes, a pre-run gate, and a
+> simulated Resource Gateway. The pre-run gate controls whether Codex starts.
+> Arbitrary Codex shell and filesystem operations are still not intercepted per
+> tool call, and the demo Resource Gateway does not touch real external systems.
 
 The current shared `APP_AUTH_TOKEN` is an application-level demo token, not a
 human identity. Until authenticated operator identity is added, stored actors
@@ -427,6 +480,8 @@ docker compose config
 
 ## Documentation
 
+- [Session implementation report](docs/SESSION_IMPLEMENTATION_REPORT.md)
+- [Full hackathon codebase audit and remediation status](docs/FULL_HACKATHON_CODEBASE_AUDIT.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)

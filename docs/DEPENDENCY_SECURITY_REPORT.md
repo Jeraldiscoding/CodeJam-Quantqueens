@@ -89,8 +89,8 @@ Successful checks:
   audited package records and zero findings
 - production container health probe — `healthy`; `/api/health` returned 200
 - runtime versions — Node.js `v22.23.2`, npm `10.9.8`, Codex CLI `0.111.0`
-- canonical `npm run check` on the current integrated tree — 24/24 test files
-  and 162/162 server tests passed, both workspace typechecks passed, and both
+- canonical `npm run check` on the current integrated tree — 25/25 test files
+  and 164/164 server tests passed, both workspace typechecks passed, and both
   production builds passed
 
 ## Residual validation gaps and follow-up

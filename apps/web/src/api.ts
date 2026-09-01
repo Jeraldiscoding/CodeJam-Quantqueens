@@ -118,6 +118,17 @@ export interface ManagedActionResult {
   };
 }
 
+export type PromptRequestResult =
+  | {
+      kind: "relationship_observation";
+      observations: GraphObservation[];
+      explanation: string;
+    }
+  | {
+      kind: "unhandled";
+      explanation: string;
+    };
+
 export type ManagedCapability = "CAN_READ" | "CAN_WRITE" | "CAN_CALL" | "CAN_USE";
 
 export interface ManagedActionOptions {
@@ -166,7 +177,9 @@ export interface SafetyEvidence {
   };
   verdict: {
     permission: "ALLOW" | "DENY";
+    permissionReasonCode: string;
     safety: "ALLOW" | "WARN" | "BLOCK" | "NOT_EVALUATED";
+    safetyReasonCode: string | null;
     effect: "COMPLETED" | "PREVENTED" | "WAITING_FOR_REVIEW" | "FAILED" | "UNKNOWN";
     explanation: string;
   };
@@ -221,6 +234,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   };
   const response = await fetch(url, {
     ...options,
+    // API projections are live control-plane state. Reusing a cached empty
+    // observation list can hide relationships learned by a just-completed Run.
+    cache: options?.cache ?? "no-store",
     headers,
   });
   const data = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -339,7 +355,9 @@ export const api = {
       },
     ),
   observations: (agentId: string) =>
-    request<{ observations: GraphObservation[] }>(`/api/agents/${agentId}/observations`),
+    request<{ observations: GraphObservation[] }>(`/api/agents/${agentId}/observations`, {
+      cache: "no-store",
+    }),
   resolveObservation: (
     agentId: string,
     observationId: string,
@@ -358,6 +376,11 @@ export const api = {
         body: JSON.stringify({ content }),
       },
     ),
+  promptRequest: (id: string, content: string) =>
+    request<PromptRequestResult>(`/api/agents/${id}/prompt-requests`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    }),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   runEvents: (id: string) =>
     request<{ events: RunTimelineItem[] }>(`/api/runs/${id}/events`),

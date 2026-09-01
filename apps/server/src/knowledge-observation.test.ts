@@ -34,6 +34,16 @@ describe("knowledge observations", () => {
     ]);
   });
 
+  it("extracts natural model phrasing with articles and explanatory clauses", () => {
+    expect(extractRelationshipCandidates(
+      "The Checkout API calls the Fraud Service as part of validating incoming purchase transactions.\nThe Fraud Service processes customer records to run identity and risk checks before a checkout is completed.",
+      "run_output",
+    )).toMatchObject([
+      { sourceLabel: "Checkout API", targetLabel: "Fraud Service", relation: "CALLS" },
+      { sourceLabel: "Fraud Service", targetLabel: "Customer records", relation: "PROCESSES" },
+    ]);
+  });
+
   it("quarantines pending evidence, reuses nodes, and only affects risk after confirmation", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-observation-test-"));
     directories.push(root);

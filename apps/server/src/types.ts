@@ -71,6 +71,14 @@ export interface AgentRun {
   createdAt: string;
   kind?: "codex" | "managed_action";
   originPrincipalId?: string;
+  pendingAction?: {
+    decisionId: string;
+    approvalRequestId: string;
+    capability: "CAN_READ" | "CAN_WRITE";
+    targetNodeId: string;
+    proposalReason: string;
+    modelOutput: string;
+  };
 }
 
 export interface Database {
@@ -105,6 +113,8 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  /** Narrows one execution without weakening the server-wide sandbox setting. */
+  sandboxModeOverride?: "read-only" | "workspace-write" | "danger-full-access";
 }
 
 export interface AgentRunner {

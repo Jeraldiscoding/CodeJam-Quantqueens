@@ -16,6 +16,8 @@ React/Vite UI
   -> AgentService (`launchpad.json`: Agents, Messages, Runs)
      -> pre-run RunPolicyGate -> PolicyService
      -> AgentRunner -> Codex process or disposable runtime container
+     -> for named managed Resources: read-only ModelActionMediator
+        -> validated bounded proposal -> ResourceGateway
   -> ControlledActionRuntime -> ResourceGateway
      -> ExecutionIdentityService / DelegationService
      -> PolicyService
@@ -30,16 +32,19 @@ Policy / graph / security / timeline services
      breakers, and managed resource state)
 ```
 
-The coarse gate runs before the whole Codex Run. The stronger action-level path
-is used by protected managed-action API requests and performs a real SQLite
-read/write only after the exact decision has been audited and atomically
+The coarse gate runs before the whole Codex Run. When a prompt names a managed
+Resource, `ModelActionMediator` narrows that Codex turn to read-only planning,
+requires one bounded capability/Resource proposal, validates it against the
+current managed catalog, and sends it through the stronger action-level path.
+Protected managed-action APIs use the same gateway directly. A real SQLite
+read/write occurs only after the exact decision has been audited and atomically
 claimed. At effect time the SQLite boundary rechecks that claim, the current
 principal, exact capability and ownership, full delegation chain, correlated
 risk, payload, and breaker in the same transaction as the managed read/write,
 then stores an idempotent receipt. It is deliberately narrow: normal Codex
-tool/file/shell/connector/network behavior still bypasses it. New runtime
-claims must identify the exact adapter and prove that its effect can be reached
-only through this boundary.
+tool/file/shell/connector/network behavior outside that planning mode still
+bypasses it. New runtime claims must identify the exact adapter and prove that
+its effect can be reached only through this boundary.
 
 ## Contract ownership
 

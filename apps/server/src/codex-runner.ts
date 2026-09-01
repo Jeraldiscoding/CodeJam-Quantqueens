@@ -28,7 +28,7 @@ export function buildCodexArgs(
     "exec",
     "--json",
     "--sandbox",
-    sandboxMode,
+    request.sandboxModeOverride ?? sandboxMode,
     "--skip-git-repo-check",
     "-C",
     workspacePath,

@@ -96,7 +96,7 @@ export function createDemoGraphSeed(
       node(
         isDataSteward ? "human:marcus" : "human:alice",
         "human",
-        isDataSteward ? "Marcus (Demo Owner)" : "Alice (Demo Owner)",
+        isDataSteward ? "Marcus" : "Alice",
         "low",
         0,
         "internal",
@@ -106,7 +106,7 @@ export function createDemoGraphSeed(
             node(
               "human:bob",
               "human",
-              "Bob (Demo User)",
+              "Bob",
               "low",
               0,
               "internal",

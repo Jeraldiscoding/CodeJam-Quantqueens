@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AgentRuntimeMediator, AgentRuntimePlan } from "./agent-runtime-mediator.js";
 import type { AgentGraphProvisioner } from "./agent-graph-provisioner.js";
 import { demoAgents } from "./demo-graph.js";
 import type { AppConfig } from "./config.js";
@@ -37,6 +38,7 @@ export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly activeProtectedActions = new Map<string, Set<Promise<void>>>();
   private readonly cancellationRequests = new Set<string>();
+  private runtimeMediator: AgentRuntimeMediator | undefined;
 
   constructor(
     private readonly config: AppConfig,
@@ -48,6 +50,11 @@ export class AgentService {
     private readonly knowledgeObserver?: KnowledgeObservationService,
     private readonly runTimeline?: RunTimeline,
   ) {}
+
+  /** Production wiring installs this after ResourceGateway is constructed. */
+  setRuntimeMediator(mediator: AgentRuntimeMediator): void {
+    this.runtimeMediator = mediator;
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
@@ -650,6 +657,9 @@ export class AgentService {
     if (agent.status === "busy") {
       throw new HttpError(409, "This Agent is already running");
     }
+    if (run.pendingAction) {
+      return this.resumeMediatedAction(run, agent);
+    }
     const release = this.beginAgentOperation(
       agent.id,
       "Start the Agent before resuming this run",
@@ -720,6 +730,137 @@ export class AgentService {
     } finally {
       release();
     }
+  }
+
+  private async resumeMediatedAction(run: AgentRun, agent: Agent): Promise<AgentRun> {
+    if (!this.runtimeMediator) {
+      throw new HttpError(503, "Protected-action mediation is unavailable");
+    }
+    const release = this.beginAgentOperation(
+      agent.id,
+      "Start the Agent before resuming this protected action",
+    );
+    try {
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        const storedAgent = database.agents.find((item) => item.id === agent.id);
+        if (!storedRun || storedRun.status !== "awaiting_approval" || !storedRun.pendingAction) {
+          throw new HttpError(409, "This protected action is no longer waiting for approval");
+        }
+        if (!storedAgent || storedAgent.status === "stopped") {
+          throw new HttpError(409, "Start the Agent before resuming this protected action");
+        }
+        storedAgent.status = "busy";
+        storedAgent.lastError = null;
+        storedAgent.updatedAt = now();
+      });
+      const result = await this.runtimeMediator.resume({ run: this.getRun(run.id) });
+      const completedAt = now();
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id)!;
+        const storedAgent = database.agents.find((item) => item.id === agent.id)!;
+        storedRun.status = "completed";
+        storedRun.output = result.output;
+        storedRun.error = null;
+        storedRun.completedAt = completedAt;
+        delete storedRun.pendingAction;
+        database.messages.push({
+          id: randomUUID(),
+          agentId: agent.id,
+          runId: run.id,
+          role: "assistant",
+          content: result.output,
+          createdAt: completedAt,
+        });
+        storedAgent.status = "ready";
+        storedAgent.lastError = null;
+        storedAgent.updatedAt = completedAt;
+      });
+      await this.appendTimelineEvent({
+        runId: run.id,
+        type: "RUN_COMPLETED",
+        occurredAt: completedAt,
+        actor: this.agentActor(agent.id, agent.name, run.originPrincipalId),
+        agentId: agent.id,
+        outcome: "succeeded",
+        reasonCode: "APPROVED_PROTECTED_ACTION_COMPLETED",
+        reason: "The approved model-proposed action completed through the Resource Gateway.",
+      });
+      return this.getRun(run.id);
+    } catch (error) {
+      const completedAt = now();
+      const message = error instanceof Error ? error.message : String(error);
+      await this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        const storedAgent = database.agents.find((item) => item.id === agent.id);
+        if (storedRun && storedRun.status === "awaiting_approval") {
+          storedRun.status = "failed";
+          storedRun.error = message;
+          storedRun.completedAt = completedAt;
+          delete storedRun.pendingAction;
+        }
+        if (storedAgent && storedAgent.status !== "stopped") {
+          storedAgent.status = "ready";
+          storedAgent.lastError = message;
+          storedAgent.updatedAt = completedAt;
+        }
+      });
+      await this.appendTimelineEvent({
+        runId: run.id,
+        type: "RUN_FAILED",
+        occurredAt: completedAt,
+        actor: this.agentActor(agent.id, agent.name, run.originPrincipalId),
+        agentId: agent.id,
+        outcome: "failed",
+        reasonCode: "APPROVED_PROTECTED_ACTION_FAILED",
+        reason: message,
+      });
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  async rejectPendingMediatedAction(
+    runId: string,
+    reason: string,
+  ): Promise<AgentRun | null> {
+    const run = this.getRun(runId);
+    if (run.status !== "awaiting_approval" || !run.pendingAction) return null;
+    const completedAt = now();
+    const response = `${run.pendingAction.modelOutput}\n\nMiddleware result: rejected by a human reviewer. Nothing changed.`;
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === run.id)!;
+      const agent = database.agents.find((item) => item.id === run.agentId)!;
+      storedRun.status = "failed";
+      storedRun.error = `A reviewer rejected this protected action: ${reason}`;
+      storedRun.completedAt = completedAt;
+      delete storedRun.pendingAction;
+      database.messages.push({
+        id: randomUUID(),
+        agentId: run.agentId,
+        runId: run.id,
+        role: "assistant",
+        content: response,
+        createdAt: completedAt,
+      });
+      if (agent.status !== "stopped") {
+        agent.status = "ready";
+        agent.lastError = null;
+        agent.updatedAt = completedAt;
+      }
+    });
+    await this.appendTimelineEvent({
+      runId: run.id,
+      type: "RUN_FAILED",
+      occurredAt: completedAt,
+      actor: this.agentActor(run.agentId, undefined, run.originPrincipalId),
+      agentId: run.agentId,
+      outcome: "failed",
+      reasonCode: "APPROVAL_REJECTED",
+      reason: `A reviewer rejected this protected action: ${reason}`,
+    });
+    return this.getRun(run.id);
   }
 
   /**
@@ -812,8 +953,24 @@ export class AgentService {
       return;
     }
 
+    let runtimePlan: AgentRuntimePlan | null = null;
+    if (this.runtimeMediator) {
+      try {
+        runtimePlan = await this.runtimeMediator.prepare({ agent: agentAtStart, run });
+      } catch (reason) {
+        const detail = reason instanceof Error ? reason.message : String(reason);
+        await this.finishBlockedRun(
+          agentAtStart.id,
+          run.id,
+          null,
+          `Protected-action planning failed closed before Codex started: ${detail}`,
+        );
+        return;
+      }
+    }
+
     if (!options.skipPolicyGate) {
-      const gated = await this.applyRunPolicy(agentAtStart, run);
+      const gated = await this.applyRunPolicy(agentAtStart, run, runtimePlan?.mode);
       if (!gated) return;
     }
 
@@ -824,17 +981,44 @@ export class AgentService {
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
-        prompt: this.runtimePrompt(run),
+        prompt: runtimePlan?.prompt ?? this.runtimePrompt(run),
         threadId: agentAtStart.codexThreadId,
+        ...(runtimePlan ? { sandboxModeOverride: runtimePlan.sandboxMode } : {}),
       });
+      const mediated = runtimePlan && this.runtimeMediator
+        ? await this.runtimeMediator.mediate({
+            agent: agentAtStart,
+            run,
+            plan: runtimePlan,
+            modelOutput: result.output,
+          })
+        : { output: result.output };
+      if (mediated.approval) {
+        const approval = mediated.approval;
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          const agent = database.agents.find((item) => item.id === agentAtStart.id);
+          if (!storedRun || !agent) return;
+          storedRun.status = "awaiting_approval";
+          storedRun.policy = approval.policy;
+          storedRun.pendingAction = approval.pendingAction;
+          storedRun.usage = result.usage;
+          storedRun.error = null;
+          agent.status = "ready";
+          agent.codexThreadId = result.threadId;
+          agent.lastError = null;
+          agent.updatedAt = now();
+        });
+        return;
+      }
       const completedAt = now();
-      await this.captureKnowledge(agentAtStart.id, run.id, "run_output", result.output);
+      await this.captureKnowledge(agentAtStart.id, run.id, "run_output", mediated.output);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (!storedRun || !agent) return;
         storedRun.status = "completed";
-        storedRun.output = result.output;
+        storedRun.output = mediated.output;
         storedRun.usage = result.usage;
         storedRun.completedAt = completedAt;
         database.messages.push({
@@ -842,7 +1026,7 @@ export class AgentService {
           agentId: agent.id,
           runId: run.id,
           role: "assistant",
-          content: result.output,
+          content: mediated.output,
           createdAt: completedAt,
         });
         agent.status = "ready";
@@ -913,7 +1097,11 @@ export class AgentService {
    * Runs the pre-run policy check. Returns false when the Run must not reach
    * the runner, having already recorded the outcome on the Run itself.
    */
-  private async applyRunPolicy(agentAtStart: Agent, run: AgentRun): Promise<boolean> {
+  private async applyRunPolicy(
+    agentAtStart: Agent,
+    run: AgentRun,
+    executionMode?: AgentRuntimePlan["mode"],
+  ): Promise<boolean> {
     if (!this.runPolicyGate) return true;
 
     let summary: RunPolicySummary;
@@ -922,6 +1110,7 @@ export class AgentService {
         runId: run.id,
         agentId: agentAtStart.id,
         prompt: run.prompt,
+        ...(executionMode ? { executionMode } : {}),
       });
     } catch (reason) {
       // A policy layer that cannot reach a verdict must fail closed.

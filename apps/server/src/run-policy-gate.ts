@@ -4,11 +4,13 @@ import type { DecisionDetail, PolicyService } from "./policy-service.js";
 import type { CapabilityRelation } from "./policy-store.js";
 import { analyzePromptIntent, type PromptIntentAnalysis } from "./prompt-intelligence.js";
 import type { RunPolicySummary } from "./types.js";
+import type { ExecutionIdentity } from "./security-types.js";
 
 export interface RunGateInput {
   runId: string;
   agentId: string;
   prompt: string;
+  executionMode?: "protected_action_planner";
 }
 
 /**
@@ -35,17 +37,24 @@ export class KnowledgeGraphRunPolicyGate implements RunPolicyGate {
   constructor(
     private readonly graph: KnowledgeGraphService,
     private readonly policy: PolicyService,
+    private readonly resolveIdentity?: (input: RunGateInput) => Promise<ExecutionIdentity>,
   ) {}
 
   async evaluateRun(input: RunGateInput): Promise<RunPolicySummary> {
     const intent = analyzePromptIntent(input.prompt);
-    if (intent.intent === "informational") {
+    if (
+      intent.intent === "informational" ||
+      (intent.intent === "action" && input.executionMode === "protected_action_planner")
+    ) {
       const thresholds = this.policy.policyThresholds;
+      const planned = input.executionMode === "protected_action_planner";
       return {
         result: "ALLOW",
-        reasonCode: intent.reasonCode,
+        reasonCode: planned ? "READ_ONLY_PLANNING_BEFORE_ACTION_GATE" : intent.reasonCode,
         intent: intent.intent,
-        intentExplanation: intent.explanation,
+        intentExplanation: planned
+          ? "Codex may interpret this request in a read-only planning turn. Any protected effect still requires an exact Resource Gateway decision."
+          : intent.explanation,
         riskScore: 0,
         reviewThreshold: thresholds.reviewThreshold,
         denyThreshold: thresholds.denyThreshold,
@@ -80,6 +89,7 @@ export class KnowledgeGraphRunPolicyGate implements RunPolicyGate {
       };
     }
 
+    const identity = this.resolveIdentity ? await this.resolveIdentity(input) : undefined;
     const evaluation = await this.policy.evaluate(
       {
         operationId: runOperationId(input.runId),
@@ -88,7 +98,8 @@ export class KnowledgeGraphRunPolicyGate implements RunPolicyGate {
         capability: worst.capability,
         targetNodeId: worst.targetNodeId,
         payload: promptPayload(input.prompt),
-        actorPrincipalId: "principal:run-gate",
+        actorPrincipalId: identity?.principal.id ?? "principal:run-gate",
+        ...(identity ? { identity } : {}),
       },
       intent.intent === "suspicious" ? { forceReviewReason: intent.reasonCode } : {},
     );
@@ -118,10 +129,17 @@ export class KnowledgeGraphRunPolicyGate implements RunPolicyGate {
     if (!existing) {
       throw new Error("This Run has no recorded policy decision to resume");
     }
+    const identity = this.resolveIdentity ? await this.resolveIdentity(input) : undefined;
     await this.policy.claimForExecution({
       decisionId: existing.decision.id,
       agentId: input.agentId,
-      actorPrincipalId: "principal:run-gate",
+      actorPrincipalId: identity?.principal.id ?? "principal:run-gate",
+      ...(identity
+        ? {
+            actorRole: identity.principal.role,
+            delegationChainIds: identity.delegationChain.map((delegation) => delegation.id),
+          }
+        : {}),
       payload: promptPayload(input.prompt),
     });
   }

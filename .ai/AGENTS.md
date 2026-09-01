@@ -61,19 +61,22 @@ a second model or incompatible abstraction.
 - `AgentService.sendMessage()` creates the Run. `AgentService.executeRun()`
   invokes `applyRunPolicy()` before `runner.run()`. This is a genuine but coarse
   whole-Run interception point.
-- `ControlledActionRuntime` creates an attributable managed-action Run and
-  calls `ResourceGateway.request()`. The gateway resolves server-attested Run
+- `ControlledActionRuntime` can create an attributable managed-action Run and
+  call `ResourceGateway.request()` directly. Normal Playground prompts that
+  name a managed Resource instead use `ModelActionMediator`: the real Codex
+  turn is narrowed to a read-only planner, its bounded action proposal is
+  validated against the current server catalog, and the same Run then calls
+  `ResourceGateway.request()`. The gateway resolves server-attested Run
   identity, evaluates ownership/RBAC, exact capability, downstream graph
   impact, trusted history, and breaker state, then atomically claims the exact
   action before `SqliteManagedResourceAdapter.execute()` performs a durable
-  managed-state read or write. This narrow action-level path is real backend
-  middleware, not a frontend simulation.
-- Once `CodexRunner` or `ContainerCodexRunner` starts, ordinary shell,
-  filesystem, connector, and network actions bypass `ResourceGateway`. The
-  managed SQLite adapter is the only production action adapter currently
-  proven through this boundary; never generalize that evidence to arbitrary
-  Codex tools. Parsing Codex JSON output is post-hoc observation and must not
-  be presented as a pre-effect gate.
+  managed-state read or write. Model output never grants authority.
+- Ordinary shell, filesystem, connector, and network actions outside this
+  managed-resource planning mode still bypass `ResourceGateway`. The managed
+  SQLite adapter is the only production action adapter currently proven
+  through this boundary; never generalize that evidence to arbitrary Codex
+  tools. Parsing arbitrary output after a tool effect remains post-hoc
+  observation and must not be presented as a pre-effect gate.
 - Agents, messages, and Runs are persisted in `launchpad.json`; graph,
   observation, policy, approval, claim, timeline, identity, delegation,
   behavioral-baseline, breaker, and managed-resource data are persisted in

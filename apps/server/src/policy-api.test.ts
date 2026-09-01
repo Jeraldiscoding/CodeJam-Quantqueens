@@ -212,6 +212,29 @@ describe("Pre-run policy gate", () => {
     await app.close();
   });
 
+  it("treats a greeting as conversation instead of inventing a high-risk action", async () => {
+    const { app, service, runner } = await makeServer();
+    const agent = await service.createAgent({ name: "Release Guardian" });
+    await configureHighRiskAgent(app, agent.id);
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { content: "hi" },
+    });
+    await expect.poll(() => service.getRun(response.json().run.id).status).toBe("completed");
+
+    expect(service.getRun(response.json().run.id).policy).toMatchObject({
+      result: "ALLOW",
+      reasonCode: "INFORMATIONAL_REQUEST",
+      intent: "informational",
+      riskScore: 0,
+      approvalRequestId: null,
+    });
+    expect(runner.calls).toBe(1);
+    await app.close();
+  });
+
   it("forces suspicious intent to human review even below the normal risk threshold", async () => {
     const { app, service, runner } = await makeServer();
     const agent = await service.createAgent({ name: "Data Helper" });

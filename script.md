@@ -1,794 +1,747 @@
-# QuantQueens: Context, Pitch, and Demo Script
+# QuantQueens Presenter Runbook
 
-> Presenter-ready guide for the verified repository state on 2026-09-01.
-> Use this document to explain what was built, run the live judge flow, answer
-> technical questions, and distinguish current capabilities from future plans.
+This file is arranged in presentation order. Use **Part 1** once before the
+recording, then start the timer at **Part 2** and move straight down the page.
+Everything after Part 2 is backup or reference material; it is not part of the
+three-minute narration.
 
-## How to use this file
+## At a glance
 
-- Need one sentence: use [The message to remember](#the-message-to-remember).
-- Need a quick pitch: use the [30-second elevator pitch](#30-second-elevator-pitch).
-- Need the fastest live proof: use the [90-second demonstration](#90-second-lightning-demonstration).
-- Submitting the official demo: use the [exact three-minute script](#exact-three-minute-submission-demo).
-- Rehearsing with more explanation: use the [three-to-four-minute script](#three-to-four-minute-judge-script).
-- Presenting to engineers: use the [technical script](#seven-to-ten-minute-technical-script).
-- Discussing the roadmap: use the [capability map](#capability-map-now-next-and-long-term),
-  [short-term story](#short-term-product-story), and [long-term vision](#long-term-vision).
-- Preparing for questions: rehearse [judge Q&A](#questions-judges-are-likely-to-ask)
-  and the [presenter safety rails](#presenter-safety-rails).
+1. **Part 1: Prepare:** start Docker Compose, check the real model, and build
+   the trusted staging history.
+2. **Part 2: Present:** the exact three-minute sequence, with what to click,
+   type, say, and expect.
+3. **Part 3: Recover:** a shorter backup flow and fixes for common problems.
+4. **Part 4: Answer questions:** graph details, honest boundaries, roadmap,
+   and judge Q&A.
 
-## The message to remember
+---
 
-> **Permissions tell us what an Agent may do. QuantQueens also understands what
-> the Agent normally does, what its action could affect, and when an otherwise
-> permitted action should be stopped before anything changes.**
+# Part 1: Prepare before recording
 
-QuantQueens is runtime middleware between an Agent request and a protected
-resource effect. It is not primarily a dashboard, a visual permission table,
-or an after-the-fact logging system.
+## Start here: run Docker Compose before the demo
 
-```text
-Agent request
-  -> server-attested human, Run, and Agent identity
-  -> exact authorization and ownership check
-  -> graph impact and dependency traversal
-  -> trusted-history comparison
-  -> risk and circuit-breaker decision
-  -> one-time execution claim
-  -> real controlled resource effect
-  -> ordered persistent evidence
-  -> updated behavioral baseline
-  -> updated context for the next Run
+Run the application through Docker Compose. This gives the Agents the real
+Codex runtime in the application container.
+
+From the repository root:
+
+```bash
+./scripts/bootstrap-local.sh
 ```
 
-The shortest product description is:
+Open `.env` and set:
 
-> **QuantQueens turns authorization from a static permission check into an
-> adaptive, explainable safety decision.**
+```dotenv
+ARK_API_KEY=your-real-ark-api-key
+ARK_MODEL=your-responses-capable-endpoint-id
+APP_AUTH_TOKEN=a-private-demo-token-with-at-least-24-characters
+POLICY_REVIEW_THRESHOLD=20
+POLICY_DENY_THRESHOLD=80
+```
 
-## Context: what has been built
+The presenter thresholds mean:
 
-The selected hackathon track is **Track B — The Bouncer**. The repository now
-proves a complete, deliberately narrow middleware loop:
+- risk below 20 may execute normally;
+- risk from 20 to 79 pauses for a person;
+- risk of 80 or more is a hard stop that cannot be approved;
+- missing permission is always denied and cannot be approved.
 
-- A newly created Agent receives a distinct server-side Agent identity and a
-  persisted ownership relationship to Alice.
-- Creating an Agent grants no implicit resource access. An administrator must
-  create an exact capability such as `CAN_READ` for one resource.
-- Alice's managed record is read through a real SQLite-backed resource adapter.
-- The same Agent is denied Bob's record even when the request claims to be Bob.
-  Caller-controlled identity cannot replace the server-attested Run origin.
-- A denial returns before an execution claim or adapter effect.
-- Backend graph traversal answers forward and reverse reachability questions,
-  calculates downstream impact, and returns explainable dependency paths.
-- Prompts and Agent replies can suggest relationship observations, but pending
-  text is quarantined from enforcement. Only a human-confirmed observation can
-  add risk context, and it still cannot grant authority.
-- Trusted successful Runs build a versioned behavioral baseline. The current
-  window inspects the latest 20 completed Runs; only eligible trusted Runs in
-  that window contribute to normal behavior.
-- A later action can remain explicitly authorized yet be blocked because it is
-  novel, broader than normal, and connected to sensitive downstream resources.
-- A persistent circuit breaker stops the effect before the adapter changes the
-  resource.
-- Every meaningful transition is recorded as a structured, immutable,
-  sequence-ordered Run event.
-- Reload and restart preserve identity, permissions, Runs, graph facts,
-  decisions, baseline revisions, breaker state, effects, and receipts.
-- Delegation preserves the origin and complete chain, intersects authority,
-  and rechecks every ancestor before the effect. It cannot silently expand
-  privilege.
-- Stop closes protected-action admission and drains admitted work before it
-  reports the Agent as stopped.
-- Claim acquisition is atomic and single-use; the managed effect and its
-  idempotent receipt are committed atomically. Concurrent protected requests
-  for the same Agent admit one active Run, and a claimed Run/operation can
-  execute only once.
-
-The most important proof is not that the UI says **Blocked**. It is that the
-backend creates no execution claim, the adapter is not invoked, the durable
-resource remains unchanged, and the evidence explains why.
-
-### Verified release evidence
-
-- `npm run check`: 24 test files and 162 tests passed, followed by both
-  workspace typechecks and both production builds.
-- `npm run test:e2e`: three production-build Chromium flows passed—the complete
-  judge journey, the pending/confirm/reject observation lifecycle, and a narrow
-  viewport overflow/alignment check across all three product views.
-- Full and production npm audits: zero reported vulnerabilities.
-- Docker image build, Compose validation, container health, and live health
-  endpoint: passed.
-- Independent integration and critic reviews: **PASS** against every required
-  acceptance criterion.
-
-## Before the presentation
-
-### Start from deterministic fresh state
-
-The core middleware proof does not need an Ark key, Codex, or an external model
-call. From the repository root:
+Start with isolated data so earlier Runs cannot change the result:
 
 ```bash
 DEMO_ROOT="$(mktemp -d)"
+mkdir -p "$DEMO_ROOT/data" "$DEMO_ROOT/workspaces" "$DEMO_ROOT/codex-home"
 
-APP_DATA_DIR="$DEMO_ROOT/data" \
-AGENT_WORKSPACE_ROOT="$DEMO_ROOT/workspaces" \
-CODEX_HOME="$DEMO_ROOT/codex-home" \
-HOST=127.0.0.1 \
-PORT=3000 \
-APP_AUTH_TOKEN="" \
-APP_PRINCIPAL_ID=human:alice \
-APP_PRINCIPAL_NAME=Alice \
-APP_PRINCIPAL_ROLE=admin \
-ARK_API_KEY="" \
-ARK_MODEL="" \
-NODE_ENV=development \
-SEED_DEMO_DATA=true \
-POLICY_ENFORCEMENT=on \
-POLICY_REVIEW_THRESHOLD=20 \
-POLICY_DENY_THRESHOLD=40 \
-npm run dev
+export APP_DATA_HOST_DIR="$DEMO_ROOT/data"
+export AGENT_WORKSPACE_HOST_DIR="$DEMO_ROOT/workspaces"
+export CODEX_HOME_HOST_DIR="$DEMO_ROOT/codex-home"
+
+docker compose up --build -d
+docker compose ps
+docker compose exec -T launchpad printenv POLICY_REVIEW_THRESHOLD POLICY_DENY_THRESHOLD
 ```
 
-Open <http://127.0.0.1:5173>.
+Wait until `launchpad` is **healthy**, then open
+<http://127.0.0.1:3000>. Enter the same `APP_AUTH_TOKEN` from `.env`.
+The final command must print `20` and then `80`. If it prints `20` and `40`,
+the later production action will hard-stop and cannot be approved; correct
+`.env` and recreate the container before continuing.
 
-This uses isolated temporary state, so previous baselines or breaker state
-cannot alter the presentation. Press `Ctrl+C` when finished. The temporary
-directory is not deleted automatically.
+## Preflight checklist
 
-### Optional confidence check before judges arrive
+Do not start recording until every item below passes.
 
-```bash
-npm run check
-# One-time only if Playwright's browser is not installed:
-npx playwright install chromium
-npm run test:e2e
+- [ ] The page opens at `http://127.0.0.1:3000`.
+- [ ] The Runtime card says **Codex CLI in application container**.
+- [ ] The Runtime card shows the Ark model configured in `.env`.
+- [ ] **Release Guardian** exists and is **Ready**.
+- [ ] **Dependency Scout** does not already exist.
+- [ ] A simple greeting such as `hi` returns ordinary Agent conversation. It
+      must not show an approval card.
+- [ ] The browser is at a comfortable zoom and the sidebar, tabs, prompt box,
+      and right-side **Run activity** panel fit on screen.
+
+## Build the trusted staging history
+
+This creates the real historical baseline used later. Do this before recording.
+
+**Where:** Select **Release Guardian** → click **Playground**.
+
+**Type each prompt separately and press Enter. Wait for `Resource: Completed`
+before sending the next prompt.**
+
+```text
+Update the staging configuration to release 2.3.1.
 ```
 
-Expected evidence:
+```text
+Update the staging configuration to release 2.3.2.
+```
 
-- 24 test files and 162 tests pass.
-- Both TypeScript workspaces typecheck.
-- Both production bundles build.
-- Three Playwright scenarios pass.
+```text
+Update the staging configuration to release 2.3.3.
+```
 
-### If presenting from existing state
+**Expected after the third request:**
 
-- Create a fresh Agent for the Alice/Bob proof; do not reuse a previously
-  authorized Agent.
-- If **Release Guardian** is stopped, select it and click **Start**.
-- If **Release Guardian** shows **Safety stop active**, select **Reset safety
-  stop** before beginning its extended scenario.
-- If Release Guardian has a pending review/approval Run, resolve or reject that
-  Run before presenting. Using fresh state is safer than repairing ambiguous
-  demo state live.
-- If **Staging baseline ready** is already visible, the trusted baseline is
-  ready; continue to the production action.
-- If the page was reloaded, run **Verify resource boundary** again so the
-  in-page control state enables the baseline action.
+- **Permission: Allowed**
+- **Safety: Allowed**
+- **Resource: Completed**
+- the proof line reports an effect claim;
+- the history step says three trusted Runs form the baseline.
 
-## One-sentence pitch
+**Final reset before recording:** close any open audit trail, leave **Release
+Guardian** selected, and scroll this document to the start of Part 2.
 
-> **QuantQueens is an adaptive enforcement layer that verifies who an Agent is,
-> understands what its action could affect, learns what normal execution looks
-> like, and stops unsafe effects before they happen.**
+---
 
-## 30-second elevator pitch
+<a id="exact-three-minute-live-demo"></a>
 
-Say:
+# Part 2: Exact three-minute presentation
 
-> “Most Agent-safety products either define static permissions or explain
-> failures after the fact. QuantQueens sits directly in the protected action
-> path. It verifies the human, Agent, Run, and delegation chain; checks exact
-> permission; traverses the dependency graph; compares the request with trusted
-> previous Runs; and then allows, pauses, or blocks the real effect.
->
-> Every decision is persisted and explainable. A valid read executes, a forged
-> cross-user read never reaches the resource, and even a permitted production
-> change can be stopped when it is unusual and could reach customer data.”
+Start the timer here. Follow the seven segments in order. Each segment always has
+the same four fields: **Screen**, **Click / type**, **Say**, and **Expect**.
 
-## Exact three-minute submission demo
+**Live timing rule:** a real Codex turn normally takes about 8 to 15 seconds,
+but allow up to 30 seconds depending on the model endpoint. Use that wait to
+explain the problem being solved. Do not send another prompt or change tabs
+until the current Run reaches its stated **Expect** result.
 
-Before the timer, start from the documented fresh state, open the application
-on the Agent list, and keep the
-[one-page architecture](docs/ONE_PAGE_ARCHITECTURE.md) in a second tab. Do not
-pre-create the Agent: creating it live makes the identity proof obvious.
+## 0:00 to 0:18 | Create a new Agent identity
 
-### 0:00–0:20 — Problem and claim
+**Screen**
 
-Show the application. Say:
+The main application with **Release Guardian** selected.
 
-> “Permissions alone do not make an Agent action safe. QuantQueens sits in the
-> backend effect path: it verifies identity and exact access, calculates what
-> an action could affect, compares trusted history, and allows, pauses, or
-> blocks the real resource operation before anything changes.”
+**Click / type**
 
-### 0:20–0:35 — Architecture and trust boundary
+1. Click **Create Agent** in the sidebar.
+2. Enter the following values:
 
-Briefly show the one-page diagram. Point to **E2 · Resource Gateway**, the
-trusted middleware boundary, `middleware.db`, and the ordered timeline. Say:
+```text
+Name: Dependency Scout
+Description: Maps service dependencies from Agent work
+Instructions: Describe technical relationships precisely. Never infer permission from topology.
+```
 
-> “The browser and Agent are untrusted inputs. Only this backend gateway can
-> issue a one-time execution claim and invoke the managed adapter. Decisions
-> and effect receipts are persisted here.”
+3. Click **Create Agent** in the form.
 
-### 0:35–1:05 — Create the real Agent
+**Say**
 
-Return to the app. Create **Alice Boundary Judge** with instructions **Use only
-explicitly granted resources**, then open **Playground**. Say:
+> “QuantQueens is runtime middleware between autonomous Agents and protected
+> resources. A new Agent receives an attributable identity and Alice ownership,
+> but no resource permission.”
 
-> “This is a new Agent owned by server-attested Alice. Creation grants no
-> resource access, and this deterministic middleware proof needs no model key.”
+**Expect**
 
-### 1:05–1:40 — Normal case and denial
+- **Dependency Scout** appears in the sidebar and is selected.
+- Its status is **Ready**.
+- No resource access has been granted by creating it.
 
-Click **Grant private-record access**, then **Verify resource boundary**. Point
-to Alice's completed read, Bob's denial, and the three verdicts. Say:
+## 0:18 to 1:00 | Discover new relationships from real Agent output
 
-> “One exact `CAN_READ` permission lets the Agent read Alice's record through
-> the real SQLite adapter. The same Agent then claims to be Bob, but the server
-> ignores caller-supplied identity and denies Bob's record before an execution
-> claim or effect. Permission is denied, safety is not needed, and the resource
-> is prevented.”
+**Screen**
 
-### 1:40–2:00 — Persisted evidence
+**Dependency Scout** → **Playground**.
 
-Click **Inspect denied Run** and show the numbered events. Say:
+**Click / type**
 
-> “This is a persisted Run record, not UI-generated narration. It records the
-> human, Agent, attempted resource, backend decision, and proof that nothing
-> changed.”
+Type this exact prompt and press Enter:
 
-### 2:00–2:40 — Authorized but unsafe extension
+```text
+Map these dependencies in two plain sentences: Checkout API -> Fraud Service -> Customer records. Use the verbs calls and processes.
+```
 
-Select **Release Guardian**, open **Playground**, then click **Verify resource
-boundary**, **Build trusted baseline**, and **Request production update**.
-Point to **Permission Allowed**, **Safety Blocked**, **Resource Prevented**, and
-the customer-data impact. Say:
+Then follow this sequence:
 
-> “This proves the middleware is more than RBAC. The production write remains
-> authorized, but it is novel compared with trusted staging history and can
-> reach customer data. The persistent safety stop blocks it before the adapter;
-> the effect is never claimed.”
+1. Keep **Run activity** open while the model works.
+2. Wait for both the Agent response and the **New relationships found** card.
+   This normally takes 8 to 15 seconds; allow up to 30 seconds.
+3. Do not open a graph as soon as the text response appears. The middleware
+   persists observations immediately before the Run completes, and the card
+   appears after the UI reads that persisted evidence.
+4. Click **Show in network graph** on the discovery card. Relationship approval
+   is **not required** to display newly learned nodes and dashed edges.
+5. Wait for the graph toolbar to say **Updated** with a timestamp.
+6. If the three new nodes are still missing after about three seconds, click
+   **Refresh network** once. Wait for the **Updated** timestamp to change before
+   doing anything else. Do not repeatedly click refresh.
 
-### 2:40–3:00 — Close on enforcement
+**Say**
 
-Click **Review audit timeline** and point to the separate authorization, safety,
-breaker, and effect events. Say:
+While Codex is working, say:
 
-> “The normal action executed, the cross-user action was denied, and an
-> authorized but unsafe action was contained. QuantQueens turns static Agent
-> permission into an adaptive, explainable enforcement decision.”
+> “Most permission systems only know the direct rule: Agent A may call Service
+> B. They miss downstream customer-data impact. Diagrams become stale, while
+> logs usually explain the chain after the event.”
 
-If live latency consumes the final 40 seconds, stop after the Alice/Bob audit
-timeline. That path alone satisfies the required real Run, normal case, denial,
-backend enforcement, and persisted evidence.
+When the response appears, say:
 
-## 90-second lightning demonstration
+> “This is a real Agent Run. The model turns the request into relationship
+> statements. The middleware creates missing nodes and records edges with
+> confidence and Run provenance: Checkout API calls Fraud Service, which
+> processes Customer records.”
 
-Use this version when time is extremely limited.
+When the network appears, point to the two dashed edges and say:
 
-1. Click **Create Agent**, name it **Alice Boundary Judge**, and create it.
-2. Open **Playground** and point to **Alice → Alice Boundary Judge** and **No
-   resource permission has been granted yet**.
-3. Click **Grant private-record access**, then **Verify resource boundary**.
-4. Point to:
-   - **Alice's private records — Read completed through the protected adapter**
-   - **Bob's private records — Permission denied; caller-supplied identity
-     ignored**
-   - **Permission: Denied · Safety: Not needed · Resource: Prevented**
-5. Select **Release Guardian**, open **Playground**, click **Verify resource
-   boundary**, click **Build trusted baseline**, then **Request production
-   update**.
-6. Point to:
-   - **Permission: Allowed · Safety: Blocked · Resource: Prevented**
-   - **Action safely prevented**
-   - **Impact 5 resources · Effect never claimed**
+> “This living map answers what a system can reach and, in reverse, which
+> Agents or Runs could affect customer records. Dashed observations are visible
+> without approval but quarantined from policy until confirmed. Topology may
+> increase risk; it never creates permission.”
 
-Say:
+**Expect**
 
-> “The first result proves exact identity and ownership enforcement. The
-> second proves this is more than RBAC: permission still says yes, while
-> trusted history and downstream customer-data impact make the middleware say
-> no. In both cases the decision happens before the controlled effect.”
+- The conversation contains a real model response.
+- A **New relationships found** card reports two observations.
+- The network graph shows **Dependency Scout**, **Checkout API**, **Fraud
+  Service**, and **Customer records**.
+- The new `CALLS` and `PROCESSES` relationships are dashed or marked pending.
+- The graph header reports two relationships pending review.
+- No relationship confirmation is required for this timed presentation.
 
-## Three-to-four-minute judge script
+**Important distinction for the presenter:**
 
-### 0:00–0:20 — Establish the problem
+```text
+Observed relationship  -> visible immediately as dashed evidence
+Confirmed relationship -> eligible to inform future topology and risk
+CAN_* permission        -> explicit authority created only by an administrator
+```
 
-Say:
+Do not confirm the two relationships during the three-minute presentation.
+Confirmation is deliberately separate because “map this” is a request to
+discover topology, not proof that every statement returned by a model is true.
+If you want to demonstrate confirmation after the timer, return to
+**Dependency Scout** → **Playground** → **Review relationships** → **Review
+below**, then click **Confirm relationship** on each observation.
 
-> “Giving an Agent permission is not the same as making its behavior safe.
-> Traditional RBAC can tell us that an Agent may change a configuration. It
-> cannot tell us whether this request is unusual, what depends on that
-> configuration, or whether this particular effect should be stopped now.
->
-> QuantQueens adds that missing runtime decision layer. This is middleware,
-> not a dashboard: every result I will show comes from the backend execution
-> path and persisted state.”
+## 1:00 to 1:20 | Allow a familiar, limited action
 
-### 0:20–0:45 — Create a fresh Agent
+**Screen**
 
-Do:
+Select **Release Guardian** → click **Playground**.
 
-1. Click **Create Agent**.
-2. Enter:
-   - Name: **Alice Boundary Judge**
-   - Description: **Created live for the official Track B proof**
-   - Instructions: **Use only explicitly granted resources.**
-3. Click **Create Agent**.
-4. Open **Playground**.
+**Click / type**
 
-Point to:
+Type this exact prompt and press Enter:
 
-- **Protected actions are available**
-- **Protected action center**
-- **Alice → Alice Boundary Judge**
-- **No resource permission has been granted yet**
+```text
+Update the staging configuration to release 2.4.1.
+```
 
-Say:
+If the side panel is closed, click **Run activity**.
 
-> “This Agent did not exist before the demo. The server persists a distinct
-> Agent identity and records that Alice owns it. Creation grants no implicit
-> resource permission. The model credential is not needed because these
-> controls exercise the protected backend path directly.”
+**Say**
 
-### 0:45–1:20 — Prove identity and exact authorization
+> “Codex plans one bounded action read-only. The server checks Alice, exact
+> permission, graph impact, and trusted history. Staging is familiar with a
+> limited path, so the gateway issues one claim and performs the update.”
 
-Do:
+**Expect**
 
-1. Click **Grant private-record access**.
-2. Point out **One exact Alice-data permission is active**.
-3. Click **Verify resource boundary**.
+- **Permission: Allowed**
+- **Safety: Allowed**
+- **Resource: Completed**
+- **Effect claim issued**
+- The final journey step says **Gateway completed the effect**.
 
-Point to:
+## 1:20 to 1:42 | Deny an action with no authority
 
-- **Alice's private records — Read completed through the protected adapter**
-- **Bob's private records — Permission denied; caller-supplied identity
-  ignored**
+**Screen**
+
+Stay in **Release Guardian** → **Playground**.
+
+**Click / type**
+
+Type this exact prompt and press Enter:
+
+```text
+Read Bob's private records.
+```
+
+Then click **View audit trail**.
+
+**Say**
+
+> “Bob owns this resource, and Release Guardian has no effective permission
+> under Alice's identity. Graph proximity and history cannot manufacture
+> authority, so there is no approval and the adapter is never reached. The
+> audit preserves who asked, the Agent, Run, resource, reason, and no-effect
+> outcome.”
+
+**Expect**
+
 - **Permission: Denied**
 - **Safety: Not needed**
 - **Resource: Prevented**
+- **Effect never claimed**
+- No **Approve and continue** button appears.
+- The audit events are sequence ordered and end without a resource write.
 
-Say:
+## 1:42 to 2:12 | Pause an authorized but unusually broad action
 
-> “The first button created one exact `CAN_READ` capability—never wildcard
-> access. The second button sent two protected requests. Alice's record reached
-> the real managed SQLite adapter.
->
-> The Bob request deliberately claimed that the caller was Bob. The server
-> ignored that caller-controlled identity, reconstructed Alice from the Run,
-> checked Agent and resource ownership, and denied the action. Authorization
-> failed before risk evaluation, so there was no execution claim and no Bob
-> resource effect.”
+**Screen**
 
-### 1:20–1:45 — Show the flight recorder and Stop boundary
+Stay in **Release Guardian** → **Playground**. Click **Hide audit trail** if it
+obscures the request journey.
 
-Do:
+**Click / type**
 
-1. Click **Inspect denied Run**.
-2. Point to **Persistent run record**, **What happened**, and the numbered
-   events.
-3. Click **Stop** in the Agent header.
-4. Reload the page.
-5. Reselect **Alice Boundary Judge** if necessary and open **Playground**.
-
-Say:
-
-> “This is not a browser-assembled log. It is a sequence-ordered, persisted Run
-> record showing who attempted what, against which resource, why it was denied,
-> and whether anything changed.
->
-> Stop is also a backend barrier, not a cosmetic toggle. It closes admission,
-> drains protected work already in flight, and rejects future protected actions
-> before a claim or effect. Reload confirms that status, permission, ownership,
-> and evidence are durable.”
-
-Presenter note: the checked-in browser test makes the post-Stop protected
-request and verifies backend `409`. The normal UI shows the stopped state and
-disables the controls; do not say `409` is visibly shown unless DevTools is
-open.
-
-### 1:45–2:40 — Prove this is more than RBAC
-
-Do:
-
-1. Select **Release Guardian**.
-2. Open **Playground**.
-3. Click **Verify resource boundary**.
-4. Click **Build trusted baseline**.
-
-Point to:
-
-- **Staging baseline ready**
-- **A staging pattern is ready for comparison**
-- **Permission: Allowed · Safety: Allowed · Resource: Completed**
-
-Say:
-
-> “Now I will answer the harder question: isn't this just RBAC with a graph?
->
-> One click performs three successful staging writes through the same gateway.
-> Only safely completed, mediated Runs enter the bounded behavioral baseline.
-> Denied, blocked, failed, or prompt-only attempts cannot teach the system that
-> dangerous behavior is normal.
->
-> Most importantly, I am not changing RBAC. Release Guardian remains explicitly
-> allowed to write both staging and production configuration.”
-
-Do:
-
-5. Click **Request production update**.
-
-Point to:
-
-- **Permission: Allowed**
-- **Safety: Blocked**
-- **Resource: Prevented**
-- **Action safely prevented**
-- **Potentially affected**, including Production service and Customer dataset
-- **Impact 5 resources · Effect never claimed**
-
-Say:
-
-> “Permission says yes. The middleware says no.
->
-> The backend graph finds five resources that could be affected, including the
-> path from Deployment configuration to Production service to Customer
-> dataset. Trusted history says this target is novel and its impact is larger
-> than the normal three-resource staging pattern.
->
-> Those facts trip the persistent circuit breaker before the adapter can change
-> production. These are resources that *would have been affected*—they were not
-> touched.”
-
-### 2:40–3:20 — Connect enforcement, evidence, and learning
-
-Do:
-
-1. Click **Review audit timeline**.
-2. Point out the separate allowed authorization, blocked safety decision,
-   breaker transition, and prevented effect.
-3. Reload, reselect **Release Guardian** if necessary, open **Playground**, and
-   show the same ordered evidence and **Safety stop active**.
-4. If time permits, open **Impact map**, select **Customer dataset**, and show
-   the highlighted dependency path.
-
-Say:
-
-> “We preserve both decisions because ‘unauthorized’ and ‘authorized but
-> unsafe’ are fundamentally different. The timeline explains who acted, what
-> they requested, why risk changed, and whether an effect occurred.
->
-> The breaker and evidence survive reload. The Impact map displays the same
-> backend graph facts that policy queried before the decision; it does not
-> calculate the result in the browser.
->
-> Eligible completed Runs update the bounded historical context available to
-> future decisions. Unsafe attempts remain evidence, but never become trusted
-> normal behavior.”
-
-Close with:
-
-> **“QuantQueens does not merely show us what an Agent did. It determines what
-> the Agent may do next—and proves that an unsafe effect never happened.”**
-
-## Seven-to-ten-minute technical script
-
-Use the judge flow above, but pause at the following six ideas.
-
-### 1. Preserve three different truths
-
-Say:
-
-> “The middleware asks three separate questions:
->
-> 1. Is the exact action permitted?
-> 2. Is it safe in this runtime context?
-> 3. Did the resource effect actually happen?
->
-> Most products collapse these into one status. QuantQueens persists them as
-> separate, correlated facts: **Permission**, **Safety**, and **Resource**.”
-
-Explain that an authorization `DENY` cannot be overridden by graph proximity,
-history, ownership, or delegation. An authorization `ALLOW` is only permission
-to enter contextual risk evaluation; it is not an instruction to execute.
-
-### 2. Explain the real pre-effect boundary
-
-Say:
-
-> “Even an accepted policy result is not enough to execute. The middleware
-> creates a request-bound, one-time claim. At effect time, the SQLite boundary
-> rechecks the claim, payload, correlated decisions, current role, exact
-> capability, ownership, full delegation chain, adapter binding, and breaker
-> version in the same transaction as the managed read or write.”
-
-Then add:
-
-> “The durable receipt makes retries idempotent. In the independent concurrency
-> test, two simultaneous requests produced exactly one success, one conflict,
-> one claim, one receipt, and one resource revision.”
-
-### 3. Show how the graph changes behavior
-
-Open **Impact map** after the production block and focus **Customer dataset**.
-
-Say:
-
-> “Only a direct, explicit `CAN_*` edge grants authority. The graph never grants
-> access through proximity. Its job is operational context: what the requested
-> resource depends on, what depends on it, which Agents or Runs could affect
-> it, and which sensitive systems lie downstream.
->
-> This same backend traversal produced the five-resource impact and customer-
-> data path used by policy before the effect. The UI is rendering that decision
-> evidence, not inventing a decorative graph.”
-
-If useful, open **Network graph** and select **Refresh network**. Point to the
-visible updated time. Explain that the control performs a no-cache read of the
-shared topology instead of merely repainting the current browser state.
-
-### 4. Show safe relationship learning
-
-Open the **Relationship observations** queue when an observation is available.
-
-Say:
-
-> “Agent activity can suggest dependencies, but text is evidence—not truth and
-> never authority. New observations are visibly marked pending and quarantined:
-> they do not enter Blast Radius or policy. A human can confirm one to add risk
-> context, or reject it. Even confirmation can never create a `CAN_*`
-> capability.”
-
-The checked-in browser test proves all three states: pending leaves the score
-at zero, confirmation makes the relationship traversable for risk, and
-rejection removes it again.
-
-### 5. Explain the adaptive feedback loop
-
-Say:
-
-> “The baseline is deterministic, versioned, and persisted. It inspects the
-> latest 20 completed Runs, then allows only eligible trusted Runs in that
-> bounded window to contribute to normal behavior. It records the exact source
-> Run IDs and window used by each decision.
->
-> Failed, denied, blocked, incomplete, and unconfirmed prompt-only behavior
-> cannot enter normal history. Repeating an attack cannot train the middleware
-> to accept it. A later decision cites the frozen baseline revision that
-> influenced its outcome.”
-
-Use this loop:
+Type this exact prompt and press Enter:
 
 ```text
-MODEL     identity + authority + dependencies + trusted history
-DECIDE    authorization first, contextual risk second
-ENFORCE   approval + breaker + one-time claim
-EXECUTE   authoritative managed adapter
-OBSERVE   ordered Run events + graph audit evidence
-LEARN     only accepted completed Runs enter the baseline
-UPDATE    the next decision uses the new historical context
+Update the production deployment configuration to release 2.5.0.
 ```
 
-### 6. Explain delegation, Stop, and reconstruction
+Do not approve it yet. In the right-side panel, click **Open impact map**.
 
-Say:
+**Say**
 
-> “Delegation is attributable execution context, not new authority. The system
-> persists the origin user, parent, child, Run, requested scope, effective
-> intersection, depth, expiry, and revocation state. Parent and child authority
-> is rechecked during evaluation, claim, and atomically at effect time.”
+> “The exact permission is valid, but trusted behavior contains staging while
+> this targets production. The graph expands through five potentially affected
+> resources to restricted customer data. Risk is above review but below the
+> hard stop, so the gateway pauses before a claim. Production remains
+> unchanged.”
 
-> “Stop first closes admission and drains active protected leases. Once Stop
-> returns, an already admitted action cannot create a late claim or effect.”
+**Expect**
 
-> “The timeline is honest reconstruction: order, actors, decisions, resources,
-> delegation, failures, and outcomes. It is not deterministic re-execution of
-> arbitrary external systems.”
+- **Permission: Allowed**: the Agent has the exact capability.
+- **Safety: Needs review**: history and graph impact increase risk.
+- **Resource: Paused**: nothing has changed yet.
+- **Effect never claimed**
+- **Approve and continue** and **Reject** are visible in the Playground.
+- **Production service** and **Customer dataset** appear under **Potentially
+  affected**.
 
-## Capability map: now, next, and long term
+The difference between the three outcomes is:
 
-| Area | Verified today | Short-term expansion | Long-term direction |
+```text
+Staging       exact authority + familiar, limited impact  -> execute
+Bob's records missing effective authority                 -> deny
+Production    exact authority + unusual, broad impact     -> pause for review
+```
+
+## 2:12 to 2:42 | Show why the graph changes the decision
+
+**Screen**
+
+The **Impact map** for **Release Guardian**.
+
+**Click / type**
+
+1. Click **Customer dataset** in the blast-radius equation or on the map.
+2. If needed, click **Focus highest risk** so the relevant route is emphasized.
+3. Point along this path:
+
+```text
+Alice --OWNS--> Release Guardian
+Release Guardian --CAN_WRITE--> Deployment configuration
+Deployment configuration --DEPLOYS_TO--> Production service
+Production service --PROCESSES--> Customer dataset
+Customer dataset --CONTAINS--> PII
+```
+
+**Say**
+
+> “These edges have separate jobs. `OWNS` gives accountability and `CAN_WRITE`
+> is exact authority. A traditional check would stop there and allow the
+> change. QuantQueens follows `DEPLOYS_TO`, `PROCESSES`, and `CONTAINS` to reveal
+> restricted data before execution, so the gateway pauses. Reverse traversal
+> identifies which permissions, Agents, Runs, and upstream systems could affect
+> a dataset, improving change review and incident investigation.”
+
+**Expect**
+
+- The selected node is **Customer dataset**.
+- The permission-to-impact route is highlighted.
+- The map explains that the production request can reach five resource nodes.
+- The restricted data path is visible.
+
+Do not say that five resources changed. They are what **could** be affected if
+the approved action executes.
+
+## 2:42 to 3:00 | Approve safely and close the loop
+
+**Screen**
+
+Click **Playground** to return to the paused request.
+
+**Click / type**
+
+Click **Approve and continue** once.
+
+**Say**
+
+> “Approval is bound to this Run, payload, identity, and graph revision, then
+> consumed once. The gateway rechecks everything before completing the update.
+> QuantQueens closes the loop: propose, decide, enforce, execute, observe,
+> learn, and improve the next decision.”
+
+**Expect**
+
+- **Approved and completed**
+- **Permission: Allowed**
+- **Safety: Needs review** with **Human review approved** in the journey.
+- **Resource: Completed**
+- **Effect claim issued**
+- The approval buttons disappear and cannot be reused.
+
+---
+
+# Part 3: Backup and recovery
+
+## 90-second backup presentation
+
+Use this only if the time slot is shortened. Prepare the staging history first.
+
+### 0:00 to 0:15
+
+**Click / type:** Select **Release Guardian** → **Playground**. Send:
+
+```text
+Update the staging configuration to release 2.4.1.
+```
+
+**Say:** “A familiar, exactly permitted staging action crosses the gateway and
+completes with a one-time effect claim.”
+
+**Expect:** **Allowed / Allowed / Completed**.
+
+### 0:15 to 0:35
+
+**Click / type:** Send:
+
+```text
+Read Bob's private records.
+```
+
+**Say:** “Bob owns this resource. The Agent has no exact authority, so the
+request is denied before risk or execution can rescue it.”
+
+**Expect:** **Denied / Not needed / Prevented**.
+
+### 0:35 to 1:05
+
+**Click / type:** Send:
+
+```text
+Update the production deployment configuration to release 2.5.0.
+```
+
+Click **Open impact map** and select **Customer dataset**.
+
+**Say:** “The production write is permitted, but it is unusual relative to
+trusted staging history and the graph reaches five resources, including
+restricted customer data. The middleware pauses the effect for review.”
+
+**Expect:** **Allowed / Needs review / Paused**, with the graph path visible.
+
+### 1:05 to 1:30
+
+**Click / type:** Return to **Playground** and click **Approve and continue**.
+
+**Say:** “The exact, single-use approval is revalidated before the gateway
+changes durable managed state. Every decision and effect remains in the Run
+timeline.”
+
+**Expect:** **Approved and completed** and **Effect claim issued**.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix before recording |
+| --- | --- | --- |
+| `hi` shows a review card | An old image is still running | Run `docker compose down`, then `docker compose up --build -d`, and hard-refresh the browser. |
+| Clicking approve or reject shows `Conflict` | The browser or container has stale approval code/state | Rebuild the Compose stack, use a fresh `DEMO_ROOT`, and hard-refresh. |
+| Production says **Blocked** and has no approval button | `POLICY_DENY_THRESHOLD` is still the secure default of 40 | Set the presenter profile to review 20 / deny 80, then restart with fresh data. |
+| Production executes without review | Thresholds or seeded graph data are not the expected presenter profile | Confirm `.env`, restart with fresh data, and repeat the three staging history Runs. |
+| The Agent says it is stopped | The selected Agent was stopped manually | Click **Start**, wait for **Ready**, then resend the prompt. |
+| No model answer appears | Ark credentials/model are invalid or the runtime is unavailable | Check the Runtime card and `docker compose logs launchpad`; correct `.env` and restart. |
+| The Agent returned the two dependency sentences but no **New relationships found** card appears | The browser reused an older frontend or stale observation response | Rebuild Compose, hard-refresh, then reselect Dependency Scout. Persisted observations are restored from the completed Run. |
+| The Impact map shows only Dependency Scout after learning | Nothing is wrong: pending observations are deliberately excluded from effective policy | Use **Show pending network** to see the new nodes and dashed edges, or **Review below** to confirm them. |
+| New graph edges are dashed | Nothing is wrong | Dashed means **pending and quarantined**. They cannot affect permission or risk until confirmed. |
+| Old Agents or Runs change the results | Persistent data from a previous session was reused | Stop Compose and start again with a new temporary `DEMO_ROOT`. |
+| Buttons or text do not match this runbook | The browser has stale frontend assets | Rebuild Compose and perform a hard refresh. |
+
+Useful checks:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 launchpad
+```
+
+---
+
+# Part 4: Presenter reference and judge questions
+
+This section is not part of the timed narration.
+
+## The one-sentence product explanation
+
+> “QuantQueens is runtime middleware that attributes an Agent action, checks
+> exact authority, expands its impact through a relationship graph, compares
+> it with trusted Run history, and then executes, pauses, or prevents the real
+> managed effect through a Resource Gateway.”
+
+## Why each request gets a different outcome
+
+| Request | Permission | Runtime context | Consequence |
 | --- | --- | --- | --- |
-| Identity | Server-attested human, Agent, Run, and delegation attribution; spoofed request identity is ignored | OIDC sessions, tenant identity, requester/approver separation | Federated identity across Agent frameworks and organizations |
-| Authorization | Exact capabilities, RBAC, Agent ownership, and resource ownership | Policy-as-code and managed permission workflows | Cross-platform authorization fabric |
-| Graph intelligence | Forward/reverse reachability, dependency paths, affected Agents/Runs, bounded blast radius, and human-reviewed activity observations | Import infrastructure, credential, service, and data-lineage facts; add observation freshness/contradiction handling | A continuously updated operational world model |
-| Adaptive safety | Versioned bounded trusted-Run baseline; novelty and impact affect later decisions | Recency-aware statistics and configurable deterministic policies | Organization-wide behavioral intelligence with explainable anomaly models |
-| Enforcement | Pre-effect gateway, approval, breaker, one-time claim, real SQLite effect | Protected adapters for deployment, file, secret, database, and SaaS operations | Universal Agent-tool mediation through SDK, proxy, or sandbox enforcement |
-| Delegation | Durable lineage, scope intersection, expiry/revocation, depth limits, and ancestor revalidation | Delegation review workflows and operator visualization | Safe multi-Agent orchestration across teams and vendors |
-| Audit | Immutable ordered Run timeline and persisted safety evidence | Retention, search, export, compliance packages, and richer filters | Cross-system forensic reconstruction and continuous assurance |
-| Reliability | Atomic local effect/receipt, idempotency, stop/drain, and concurrency protection | Transactional outbox and remote-effect reconciliation | Distributed execution guarantees and replicated policy state |
-| UX | Plain-language permission, safety, impact, effect, and timeline views | Approval workflows and broader accessibility/responsive coverage | Role-specific operator, auditor, developer, and executive experiences |
+| Staging update | Exact `CAN_WRITE` exists | Familiar target; limited three-resource impact | Executes normally |
+| Bob's records | No effective `CAN_READ`; wrong owner | Risk is irrelevant after authorization fails | Denied; cannot be approved |
+| Production update | Exact `CAN_WRITE` exists | Novel target; five-resource impact; restricted data path | Pauses for single-use human approval |
+| Score at or above 80 | Permission may exist | Critical combined risk | Hard stop; change conditions and re-evaluate |
 
-## Short-term product story
+This is why the product is more than RBAC. Permission answers **may this Agent
+request the action?** The graph and history answer **is this permitted action
+normal and safe enough to execute now?**
 
-QuantQueens can be introduced first around the Agent actions where one mistake
-would be most expensive:
+## How the relationship graph works
 
-- production configuration and deployment changes;
-- customer-data reads and writes;
-- credential and secret use;
-- shared database mutations;
-- high-impact infrastructure or SaaS calls.
+### The operational problem it solves
 
-A credible initial rollout is:
+AI Agents act across APIs, services, data stores, credentials, and other
+Agents. Direct permissions show the first hop, but the real damage or customer
+impact often sits several hops away. Static diagrams also become outdated as
+Agents discover or create new integrations.
 
-1. Select five to ten high-consequence actions.
-2. Implement each as an explicit protected adapter.
-3. Import only the ownership and dependency facts needed to explain impact.
-4. Observe trusted executions to establish a bounded baseline.
-5. Begin unusual actions in approval mode.
-6. Promote deterministic high-confidence patterns to automatic blocking.
-7. Use completed Run evidence to refine topology and policy safely.
+| Common problem | What a static permission or log misses | QuantQueens benefit |
+| --- | --- | --- |
+| A permitted configuration change reaches sensitive data indirectly | RBAC sees the direct write, not the downstream service and dataset | Forward traversal calculates blast radius before execution |
+| A critical dataset is involved in an incident | Logs are scattered by tool and usually start from the action, not the protected resource | Reverse queries identify upstream resources, Agents, users, and related Runs |
+| Teams rely on manually maintained architecture diagrams | Dependencies change faster than documentation | Completed Runs propose new nodes and edges with evidence, confidence, and provenance |
+| Model output is wrong, compromised, or overconfident | Automatically trusting extracted text would poison the safety model | New observations are visible immediately but quarantined until confirmed |
+| A technically permitted action is unusual for one Agent | Static access rules have no behavioral memory | Trusted Run history and graph impact can pause or block an otherwise permitted effect |
 
-This creates practical value without pretending every Agent tool is mediated on
-day one.
+The result is not merely a more detailed diagram. The graph changes a real
+gateway decision, explains the path behind it, and becomes more useful as
+additional Runs produce trustworthy evidence.
 
-## Long-term vision
+### Nodes
 
-QuantQueens can become the runtime nervous system for autonomous organizations.
+The current graph uses operational entities that the middleware can reason
+about:
 
-Before any Agent changes anything, the platform should be able to answer:
+- humans, such as Alice and Bob;
+- Agents, such as Release Guardian and Dependency Scout;
+- resources, such as configurations, services, APIs, and datasets;
+- data categories, such as PII;
+- Runs, which preserve execution provenance.
 
-- Who initiated this?
-- Which Agent is acting, through what delegation chain?
-- Is the exact action authorized?
-- Is it normal for this Agent in this environment?
-- Which systems, data, Agents, or customers could be affected?
-- Which policy or reviewer must approve it?
-- Can the effect execute idempotently and recover safely?
-- What evidence must be retained?
-- What should future decisions learn from the outcome?
+### Edges
 
-The long-term architecture is not a larger dashboard. It is a distributed,
-vendor-neutral enforcement fabric connected to Agent frameworks, tool
-protocols, identity providers, service gateways, infrastructure graphs, data
-catalogs, deployment systems, and observability platforms.
+Edges have deliberately different security meanings:
 
-The durable graph and Run history become an institutional safety memory across
-the Agent fleet: dependency-aware intervention, controlled delegation,
-explainable anomaly detection, policy simulation, and evidence for human and
-regulatory oversight.
+- **Authority:** `CAN_READ`, `CAN_WRITE`, `CAN_CALL`, `CAN_USE`
+- **Accountability:** `OWNS`
+- **Topology and impact:** `DEPLOYS_TO`, `CALLS`, `PROCESSES`, `CONTAINS`
+- **Runtime evidence:** `ATTEMPTED`, `TOUCHED`, `DENIED`
 
-## Questions judges are likely to ask
+Only an explicit `CAN_*` edge can contribute resource authority. Ownership,
+topology, Run history, proximity, or model output cannot grant permission.
 
-### “Isn't this just RBAC?”
+### How new relationships are discovered safely
 
-No. RBAC makes the first decision. In the production demonstration, exact
-authorization remains `ALLOW`. Graph impact, historical novelty, and breaker
-state independently produce `BLOCK`, preventing the effect without changing
-the permission.
+```text
+Agent Run completes
+  -> bounded statements are extracted from the model response
+  -> missing nodes and observed edges are stored with Run provenance
+  -> observations remain pending and quarantined
+  -> a person confirms or rejects them
+  -> confirmed topology may inform later graph impact and risk
+  -> no observation can create a CAN_* permission
+```
+
+This is bounded, evidence-backed relationship discovery rather than an
+uncontrolled self-modifying permission system. The graph becomes more useful
+as Runs reveal dependencies, while authority remains explicit.
+
+### Operational questions the graph can answer
+
+- What can this Agent reach directly and indirectly?
+- Which downstream resources could this action affect?
+- Which Agent, Run, or human could affect this resource?
+- Why was the action allowed, paused, or denied?
+- Which path reaches a sensitive dataset?
+- Which Runs attempted or touched this resource?
+
+The queries run in backend services and feed policy. The UI visualizes the same
+results; it does not calculate the security verdict.
+
+## The complete middleware loop
+
+```text
+MODEL proposes a bounded action
+  -> IDENTITY attributes user, Agent, Run, and delegation
+  -> AUTHORIZATION checks ownership and exact capability
+  -> GRAPH computes downstream reach and sensitive paths
+  -> HISTORY compares the action with trusted prior Runs
+  -> POLICY allows, pauses, or blocks
+  -> GATEWAY issues a one-time claim only when permitted
+  -> ADAPTER performs the durable managed action
+  -> TIMELINE records ordered evidence
+  -> CONFIRMED OBSERVATIONS may update graph context
+  -> ELIGIBLE SUCCESSFUL RUN EVENTS update the trusted behavioral baseline
+  -> the next decision uses the updated model
+```
+
+## Current capabilities, near term, and long term
+
+### Working now
+
+- real Codex planning for named managed-resource requests;
+- server-attested human, Agent, and Run identity;
+- exact capability and owner enforcement;
+- backend forward and reverse graph traversal;
+- graph-informed blast radius with runtime consequences;
+- trusted-history behavioral baselines with poisoning resistance;
+- allow, review, hard-stop, approval, rejection, and breaker paths;
+- one-time execution claims and a durable SQLite managed-resource effect;
+- persisted, sequence-ordered Run timelines;
+- quarantined relationship discovery from Agent output;
+- bounded delegation with effective-permission intersection.
+
+### Short term
+
+- add more authoritative resource adapters behind the same gateway contract;
+- add production identity-provider and reviewer separation of duty;
+- add richer observation confirmation, ownership, and expiry workflows;
+- show reverse-impact questions directly in the non-technical UI;
+- use transactional outboxes for external APIs whose effects and audit records
+  cannot share one database transaction.
+
+### Long term
+
+- make QuantQueens the policy and evidence plane across multi-Agent estates;
+- learn organization-specific normal behavior without allowing poisoned Runs
+  to normalize danger;
+- combine service catalogs, credentials, data lineage, and Agent delegation in
+  one operational impact model;
+- simulate proposed plans against the graph before execution;
+- support incident reconstruction, recovery workflows, and cross-system policy
+  enforcement across many adapter types.
+
+## Honest implementation boundary
+
+- The proven controlled effect is the managed SQLite resource adapter.
+- Protected prompts are interpreted by Codex in a read-only planning turn, then
+  validated by the server before the gateway.
+- Ordinary Codex filesystem, shell, connector, and network tools are not all
+  intercepted by this gateway yet.
+- The application currently has one configured authenticated principal for the
+  session. Alice and Bob demonstrate ownership enforcement; they are not two
+  separate logged-in browser users.
+- Pending model-derived observations do not affect effective policy.
+- The persisted timeline reconstructs the ordered facts of a Run; it does not
+  provide deterministic replay or re-execution of arbitrary external effects.
+
+## Judge Q&A
+
+### “Is this just RBAC?”
+
+No. RBAC is the first gate. The production request has valid permission but is
+still paused because trusted history and the backend impact graph make it
+unusually risky.
 
 ### “Is the graph only a visualization?”
 
-No. Policy calls backend graph traversal before the effect. The returned
-five-resource impact and customer-data path are persisted in the risk decision
-and help cause the block. The Impact map displays backend truth.
+No. The backend traversal returns the five-resource blast radius and restricted
+customer-data path before execution. Those facts contribute to the recorded
+risk decision that pauses the gateway.
 
-### “Is the action mocked?”
+### “Are the prompts hard-coded in the browser?”
 
-No. The protected read and write use durable SQLite managed state. Successful
-effects create idempotent receipts and update or read real state. Blocked
-actions receive no execution claim and leave the resource unchanged. The data
-is a deterministic hackathon fixture; the middleware operation is real.
+No. The browser submits natural language. Codex proposes at most one bounded
+managed action in a read-only planning turn; the server validates the proposal
+against its resource catalog. The model cannot submit a trusted identity,
+permission, graph path, risk score, or verdict.
 
-### “Is the learning just a changing number?”
+### “Is the resource action real?”
 
-No. The baseline is rebuilt from persisted, completed, safely mediated Run
-events. It records its revision, source Runs, history bounds, normal
-action/resource scope, and impact statistics. A future decision consumes that
-frozen revision.
+Yes, within the documented managed-resource boundary. After policy and claim
+checks, the SQLite adapter changes durable state. Denied and unapproved actions
+return before a claim and before that effect.
 
-### “Can repeated attacks teach the system that the attack is normal?”
+### “Can discovered relationships grant access?”
 
-No. Denied, blocked, failed, incomplete, and prompt-only actions cannot enter
-the trusted-normal baseline.
+No. Model-derived relationships start quarantined. Confirmation can add
+topology context to future impact calculations, but only explicit `CAN_*`
+authority can permit an action.
 
-### “Can a malicious prompt poison the graph risk decision?”
+### “Why can production continue after it was stopped?”
 
-Not before review. Prompt and Agent-reply relationships are stored as pending
-observations and remain visible in the operator queue and Network Graph, but
-policy traversal only reads human-confirmed observations. Confirmation may add
-risk context; it still cannot grant any capability. Rejection removes the
-observation from active views and policy.
+It is paused at the review threshold, not hard blocked. The person approves the
+exact request, and the gateway revalidates identity, payload, graph revision,
+policy, and one-time claim before execution. Critical risk and missing
+permission remain non-overridable.
 
-### “Can a caller pretend to be another user?”
+### “Can repeated dangerous attempts teach the system that danger is normal?”
 
-No. Protected requests use the server-attested origin stored with the Run.
-Caller-supplied identity fields and identity-like headers are ignored. The
-current POC uses one configured human session; full OIDC-backed multi-user
-identity is future work.
+No. Only eligible completed and accepted Runs enter the trusted normal
+baseline. Denied, blocked, failed, and quarantined behavior remains evidence
+but cannot normalize its target.
 
-### “Can a delegated Agent gain more privilege?”
+### “Can delegation increase privilege?”
 
-Not through the protected managed-action path. Delegated authority is an
-intersection, never a union. Origin, every parent, requested scope, child
-capability, ownership, expiry, revocation, and depth are checked. The full
-chain is revalidated before the managed effect. Ordinary unmediated Codex tools
-remain outside this guarantee.
+No. A delegated Agent receives only the intersection of origin authority,
+parent authority, delegated scope, and the child Agent's own exact capability.
+The origin and chain remain attributable to the Run.
 
-### “Does Stop really stop execution?”
+### “Can an approval be reused?”
 
-Yes for the protected action path. Stop closes admission and drains active
-leases before storing the stopped state. Subsequent protected actions return
-`409` before a claim or effect. Only explicit Start reopens admission.
-
-### “Can the same approved Run/operation execute twice?”
-
-The request-bound claim is single use and the effect receipt is idempotent.
-The same claimed Run/operation cannot mutate twice. Separately admitted,
-sequential requests are distinct operations and may each execute if policy
-allows them.
+No. It is bound to the exact Run, payload, identity, and graph revision, then
+consumed by a one-time execution claim.
 
 ### “Can you replay a Run?”
 
-The system provides durable execution reconstruction: ordered actors,
-decisions, resources, delegation, failures, and outcomes. It does not claim
-deterministic re-execution of arbitrary external effects.
+The flight recorder reconstructs execution order, identities, decisions,
+resources, approval, and outcome from persisted events. It is honest audit
+reconstruction, not deterministic re-execution of arbitrary side effects.
 
-### “Does every Codex action use the gateway?”
+## Submission checklist
 
-No. The current strongest guarantee covers the declared managed SQLite adapter.
-Ordinary Codex shell, filesystem, connector, and network operations are outside
-that action-level boundary. Adding protected adapters and sandbox mediation is
-the primary expansion path.
+### Three-minute live presentation
 
-### “Why does the demo not call an LLM?”
+- [ ] One real Agent Run uses the normal Playground.
+- [ ] A familiar action succeeds through the gateway.
+- [ ] An unauthorized action is denied without an effect.
+- [ ] An authorized but risky action pauses, shows graph impact, and continues
+      only after bounded approval.
+- [ ] The relationship graph shows newly observed nodes and edges.
+- [ ] The audit trail shows persisted decision and outcome evidence.
 
-The judge flow deliberately invokes the protected action path deterministically
-so identity, policy, graph impact, effect prevention, learning, and persistence
-can be proven without model or network variability. Model-backed chat remains
-available when Ark is configured.
+### One-page architecture diagram
 
-### “Can this safely control remote systems today?”
+Show the model, server identity boundary, authorization, graph/history policy,
+Resource Gateway, real adapter, event timeline, observation loop, trust
+boundary, and the point where execution can be stopped.
 
-The decision protocol is suitable for remote adapters, but the strongest
-atomic guarantee today is local SQLite. Remote effects need a transactional
-outbox, stable operation IDs, delivery acknowledgements, and reconciliation.
+### Repository
 
-## Presenter safety rails
+Confirm setup instructions, problem and rationale, design summary, automated
+tests, demo steps, limitations, and secret-handling guidance are present.
 
-Do not say:
+## Final closing line
 
-- “Bob logs into the application.”
-- “This is already a production multi-tenant identity system.”
-- “Every Codex or Agent tool passes through the gateway.”
-- “The graph grants permission through transitive reachability.”
-- “The five production resources were touched.”
-- “Replay deterministically reruns arbitrary effects.”
-- “The system uses sophisticated machine learning.”
-- “Remote effects have the same atomicity as SQLite.”
-- “The UI is the security boundary.”
-
-Say instead:
-
-- “Bob is a deterministic second resource owner used to prove backend
-  enforcement and identity-spoof resistance.”
-- “The current POC has one server-configured authenticated human.”
-- “The managed adapter is the fully proven protected-action boundary.”
-- “Only explicit direct capabilities grant authority; the graph supplies
-  operational impact.”
-- “The five resources are what would have been affected; the effect was
-  prevented.”
-- “The timeline provides durable, ordered reconstruction.”
-- “The system uses deterministic, explainable behavioral adaptation.”
-- “Remote adapters are the next reliability expansion.”
-- “The UI renders decisions made and persisted by the backend.”
-
-## Memorable closing
-
-> **“Agent systems should not be trusted merely because we can see what they
-> did. They should be trusted because we can prove unsafe actions were stopped
-> before they happened—and because trusted execution history becomes bounded,
-> explainable context for the next decision.”**
-
-## Source-of-truth references
-
-- [README](README.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Current weaknesses](docs/CURRENT_WEAKNESSES.md)
-- [Demo scenarios](.ai/specs/demo-scenarios.md)
-- [Acceptance criteria](.ai/specs/acceptance-criteria.md)
-- [Playwright judge flow](tests/e2e/judge-flow.spec.ts)
+> “QuantQueens does not merely report what an Agent did; it understands who is
+> acting, what the action can affect, whether the behavior is normal, and
+> intervenes before the protected effect occurs.”

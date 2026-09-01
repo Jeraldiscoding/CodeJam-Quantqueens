@@ -3,7 +3,10 @@
 Keep changes focused, reproducible, and suitable for a three-day student
 hackathon.
 
-## Setup
+## Local source-development setup
+
+This is for contributors editing the application. It is not the live-demo
+startup; the official judge flow uses Docker Compose from `script.md`.
 
 ```bash
 npm ci

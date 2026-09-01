@@ -22,6 +22,7 @@ import { DelegationService } from "./delegation-service.js";
 import { SqliteManagedResourceAdapter } from "./managed-resource-adapter.js";
 import { ControlledActionRuntime } from "./controlled-action-runtime.js";
 import { SafetyEvidenceService } from "./safety-evidence.js";
+import { ModelActionMediator } from "./model-action-mediator.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
@@ -70,7 +71,11 @@ const policy = new PolicyService(graph, graphStore, governanceStore, {
   denyThreshold: config.policyDenyThreshold,
   approvalTtlMs: config.policyApprovalTtlMs,
 }, { security: securityStore, risk: behavioralRisk, timeline: runTimeline });
-const runPolicyGate = new KnowledgeGraphRunPolicyGate(graph, policy);
+const runPolicyGate = new KnowledgeGraphRunPolicyGate(
+  graph,
+  policy,
+  (input) => identities.resolve({ runId: input.runId, principal }),
+);
 
 const workspaces = new WorkspaceManager(config.workspaceRoot);
 const runner = createRunner(config);
@@ -97,6 +102,7 @@ const gateway = new ResourceGateway(
   identities,
   runTimeline,
 );
+service.setRuntimeMediator(new ModelActionMediator(graphConfiguration, gateway, principal));
 const controlledActions = new ControlledActionRuntime(
   service,
   gateway,

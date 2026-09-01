@@ -65,6 +65,15 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  kind?: "codex" | "managed_action";
+  pendingAction?: {
+    decisionId: string;
+    approvalRequestId: string;
+    capability: "CAN_READ" | "CAN_WRITE";
+    targetNodeId: string;
+    proposalReason: string;
+    modelOutput: string;
+  };
 }
 
 export type RunEventType =

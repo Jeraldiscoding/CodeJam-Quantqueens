@@ -42,6 +42,7 @@ const compoundAction = new RegExp(
   "i",
 );
 const informationalLead = /^(?:what|why|how|when|where|who|explain|summarize|describe|clarify|compare|tell me|help me understand|can you explain|could you explain)\b/i;
+const conversationalOnly = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you)[!.?]*$/i;
 
 export function analyzePromptIntent(prompt: string): PromptIntentAnalysis {
   const normalized = prompt.trim().replace(/\s+/g, " ");
@@ -70,12 +71,18 @@ export function analyzePromptIntent(prompt: string): PromptIntentAnalysis {
     };
   }
 
-  if (informationalLead.test(normalized) || /\?$/.test(normalized)) {
+  if (
+    conversationalOnly.test(normalized) ||
+    informationalLead.test(normalized) ||
+    /\?$/.test(normalized)
+  ) {
     return {
       intent: "informational",
       reasonCode: "INFORMATIONAL_REQUEST",
-      explanation: "The request asks for an explanation or summary and does not ask the Agent to perform an operation.",
-      signals: ["explanation-only request"],
+      explanation: conversationalOnly.test(normalized)
+        ? "The message is conversational and does not ask the Agent to perform an operation."
+        : "The request asks for an explanation or summary and does not ask the Agent to perform an operation.",
+      signals: [conversationalOnly.test(normalized) ? "conversation only" : "explanation-only request"],
     };
   }
 

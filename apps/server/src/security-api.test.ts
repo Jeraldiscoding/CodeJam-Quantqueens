@@ -252,7 +252,7 @@ describe("managed security API", () => {
     });
     expect(bobImpact.statusCode, bobImpact.body).toBe(200);
     expect(bobImpact.json().owners).toMatchObject([
-      { id: "human:bob", label: "Bob (Demo User)", type: "human" },
+      { id: "human:bob", label: "Bob", type: "human" },
     ]);
 
     const marcusAgent = await app.inject({

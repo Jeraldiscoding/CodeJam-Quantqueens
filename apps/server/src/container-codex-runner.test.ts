@@ -60,4 +60,25 @@ describe("Container Codex runner", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "continue"]);
     expect(args).not.toContain("keep-id");
   });
+
+  it("keeps a protected-action planning turn read-only inside the runtime", () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      CODEX_HOME: "/tmp/codex-home",
+      RUNTIME_PROVIDER: "container",
+      CODEX_SANDBOX_MODE: "workspace-write",
+    });
+    const args = buildContainerRunArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "plan only",
+        threadId: null,
+        sandboxModeOverride: "read-only",
+      },
+      config,
+    );
+    expect(args).toContain("read-only");
+    expect(args).not.toContain("workspace-write");
+  });
 });

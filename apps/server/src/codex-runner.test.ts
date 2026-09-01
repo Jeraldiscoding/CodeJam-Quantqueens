@@ -37,6 +37,21 @@ describe("Codex runner protocol", () => {
     expect(args.slice(-3)).toEqual(["resume", "thread-123", "add tests"]);
   });
 
+  it("can narrow a single planning run to read-only", () => {
+    const args = buildCodexArgs(
+      {
+        agentId: "agent",
+        workspacePath: "/tmp/workspace",
+        prompt: "plan a protected action",
+        threadId: null,
+        sandboxModeOverride: "read-only",
+      },
+      "workspace-write",
+    );
+    expect(args).toContain("read-only");
+    expect(args).not.toContain("workspace-write");
+  });
+
   it("extracts the session, final message and usage", () => {
     const parsed = {
       messages: [] as string[],

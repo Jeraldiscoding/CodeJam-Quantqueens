@@ -32,7 +32,9 @@ export interface SafetyEvidence {
   };
   verdict: {
     permission: "ALLOW" | "DENY";
+    permissionReasonCode: string;
     safety: "ALLOW" | "WARN" | "BLOCK" | "NOT_EVALUATED";
+    safetyReasonCode: string | null;
     effect: "COMPLETED" | "PREVENTED" | "WAITING_FOR_REVIEW" | "FAILED" | "UNKNOWN";
     explanation: string;
   };
@@ -139,7 +141,9 @@ export class SafetyEvidenceService {
         },
         verdict: {
           permission,
+          permissionReasonCode: detail.authorization.reasonCode,
           safety,
+          safetyReasonCode: risk?.reasonCode ?? null,
           effect,
           explanation: risk?.explanation ??
             (permission === "DENY"

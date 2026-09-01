@@ -28,6 +28,10 @@ describe("DemoAgentGraphProvisioner", () => {
     await expect(store.getNode("asset:alice-private-records")).resolves.toMatchObject({
       metadata: { ownerId: "human:alice", adapterKind: "managed_state" },
     });
+    await expect(store.getNode("human:alice")).resolves.toMatchObject({
+      label: "Alice",
+      type: "human",
+    });
     await expect(store.getNode("asset:bob-private-records")).resolves.toMatchObject({
       metadata: { ownerId: "human:bob", adapterKind: "managed_state" },
     });

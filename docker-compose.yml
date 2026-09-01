@@ -20,11 +20,11 @@ services:
       CODEX_HOME: /app/codex-home
       CODEX_SANDBOX_MODE: ${CODEX_SANDBOX_MODE:-workspace-write}
     ports:
-      - "${PUBLIC_PORT:-3000}:3000"
+      - "${PUBLIC_HOST:-127.0.0.1}:${PUBLIC_PORT:-3000}:3000"
     volumes:
-      - ./data:/app/data
-      - ./workspaces:/app/workspaces
-      - ./codex-home:/app/codex-home
+      - ${APP_DATA_HOST_DIR:-./data}:/app/data
+      - ${AGENT_WORKSPACE_HOST_DIR:-./workspaces}:/app/workspaces
+      - ${CODEX_HOME_HOST_DIR:-./codex-home}:/app/codex-home
     init: true
     security_opt:
       - no-new-privileges:true

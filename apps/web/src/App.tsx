@@ -3,6 +3,7 @@ import {
   api,
   ApiError,
   setAuthToken,
+  type GraphObservation,
   type PromptAnalysis,
   type PromptGraphSuggestion,
 } from "./api";
@@ -12,12 +13,10 @@ import { RunTimeline } from "./RunTimeline";
 import { SecurityDemoPanel } from "./SecurityDemoPanel";
 import type { Agent, AgentRun, Message, RunTimelineItem, SystemInfo } from "./types";
 
-const RELEASE_GUARDIAN_ID = "d7b3a871-81e1-4965-9a88-bef875c3bb19";
-
 const starterPrompts = [
-  "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
-  "Inspect this workspace and explain what you would improve first.",
-  "Build a responsive single-page todo app with tests.",
+  "Explain in two sentences how you would assess release readiness. Do not make changes.",
+  "Update the staging configuration to release 2.4.1.",
+  "Read Bob's private records.",
 ];
 
 const emptyForm = {
@@ -68,6 +67,15 @@ export default function App() {
   const [analyzingPrompt, setAnalyzingPrompt] = useState(false);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [runEvents, setRunEvents] = useState<RunTimelineItem[]>([]);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [activityPrompt, setActivityPrompt] = useState("");
+  const [securityRefreshToken, setSecurityRefreshToken] = useState(0);
+  const [relationshipDiscovery, setRelationshipDiscovery] = useState<{
+    prompt: string;
+    explanation: string;
+    observations: GraphObservation[];
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -123,17 +131,42 @@ export default function App() {
   useEffect(() => {
     setActiveRun(null);
     setRunEvents([]);
+    setAuditOpen(false);
+    setActivityOpen(false);
+    setActivityPrompt("");
+    setRelationshipDiscovery(null);
     setPromptReview(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
-    void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(async ([, result]) => {
+    void Promise.all([
+      refreshMessages(selectedId),
+      api.runs(selectedId),
+      api.observations(selectedId),
+    ])
+      .then(async ([, result, learned]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
+        const latestObservations = latest
+          ? learned.observations.filter(
+              (observation) =>
+                observation.runId === latest.id &&
+                observation.sourceKind === "run_output" &&
+                observation.state === "observed",
+            )
+          : [];
+        if (latestObservations.length > 0) {
+          setRelationshipDiscovery({
+            prompt: `${latestObservations.length} ${latestObservations.length === 1 ? "relationship" : "relationships"} extracted from the Agent's response`,
+            explanation: "The middleware created the missing resource nodes and stored the proposed edges with Run provenance. They remain quarantined until you confirm them.",
+            observations: latestObservations,
+          });
+        }
         setActiveRun(latest);
+        setActivityOpen(Boolean(latest));
+        setActivityPrompt(latest?.prompt ?? "");
         if (latest) {
           const timeline = await api.runEvents(latest.id);
           if (selectedIdRef.current === selectedId) setRunEvents(timeline.events);
@@ -161,7 +194,7 @@ export default function App() {
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+  }, [messages, activeRun, relationshipDiscovery, securityRefreshToken]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -247,7 +280,24 @@ export default function App() {
         if (selectedIdRef.current === agentId) setActiveRun(result.run);
         if (selectedIdRef.current === agentId) setRunEvents(timeline.events);
         if (!["queued", "running"].includes(result.run.status)) {
-          await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          const [, , learned] = await Promise.all([
+            refreshMessages(agentId),
+            refreshAgents(),
+            api.observations(agentId),
+          ]);
+          const runObservations = learned.observations.filter(
+            (observation) =>
+              observation.runId === runId &&
+              observation.sourceKind === "run_output" &&
+              observation.state === "observed",
+          );
+          if (selectedIdRef.current === agentId && runObservations.length > 0) {
+            setRelationshipDiscovery({
+              prompt: `${runObservations.length} ${runObservations.length === 1 ? "relationship" : "relationships"} extracted from the Agent's response`,
+              explanation: "The middleware created the missing resource nodes and stored the proposed edges with Run provenance. They remain quarantined until you confirm them.",
+              observations: runObservations,
+            });
+          }
           return;
         }
       }
@@ -289,6 +339,8 @@ export default function App() {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
         setRunEvents([]);
+        setActivityOpen(true);
+        setActivityPrompt(content);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -308,15 +360,23 @@ export default function App() {
     if (!selected || !prompt.trim()) return;
     const content = prompt.trim();
     setAnalyzingPrompt(true);
+    setActivityOpen(true);
+    setActivityPrompt(content);
     setError(null);
     try {
-      const { analysis } = await api.analyzePrompt(selected.id, content);
-      const suggestion = analysis.suggestions[0];
-      setPrompt("");
-      if (suggestion) {
-        setPromptReview({ content, analysis, suggestion });
+      const routed = await api.promptRequest(selected.id, content);
+      if (routed.kind === "relationship_observation") {
+        setPrompt("");
+        setPromptReview(null);
+        setRelationshipDiscovery({
+          prompt: content,
+          explanation: routed.explanation,
+          observations: routed.observations,
+        });
+        setActivityOpen(false);
         return;
       }
+      setPrompt("");
       await dispatchMessage(selected, content);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -355,6 +415,7 @@ export default function App() {
       const [run, timeline] = await Promise.all([api.run(runId), api.runEvents(runId)]);
       setActiveRun(run.run);
       setRunEvents(timeline.events);
+      setAuditOpen(true);
       await refreshAgents();
       window.requestAnimationFrame(() => {
         document.getElementById("run-timeline-title")?.scrollIntoView({
@@ -365,6 +426,26 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
+  };
+
+  const toggleLatestAudit = async () => {
+    if (auditOpen) {
+      setAuditOpen(false);
+      return;
+    }
+    if (activeRun) await openSecurityRun(activeRun.id);
+  };
+
+  const openRelationshipReview = () => {
+    setWorkspaceView("graph");
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById("knowledge-review-title")?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    });
   };
 
   const unlock = async (event: React.FormEvent) => {
@@ -620,38 +701,51 @@ export default function App() {
               </button>
             </div>
 
-            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} /> : workspaceView === "overall" ? <OverallGraphPanel /> : <section className="playground playground-security-demo">
+            {workspaceView === "graph" ? <KnowledgeGraphPanel key={selected.id} agent={selected} onShowNetwork={() => setWorkspaceView("overall")} /> : workspaceView === "overall" ? <OverallGraphPanel /> : <section className={`playground playground-security-demo${activityOpen ? " activity-open" : ""}`}>
               <div className="playground-topbar">
                 <div>
                   <span className="eyebrow">
-                    Agent protection
+                    Prompt-driven protection
                   </span>
                   <h2>
-                    Review and control resource actions
+                    Ask naturally. Inspect every decision.
                   </h2>
                 </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  Middleware active
+                <div className="playground-topbar-actions">
+                  <button
+                    className="button button-ghost run-activity-button"
+                    type="button"
+                    disabled={!activeRun && !analyzingPrompt}
+                    aria-expanded={activityOpen}
+                    onClick={() => setActivityOpen((value) => !value)}
+                  >
+                    {activityOpen ? "Hide run activity" : "Run activity"}
+                  </button>
+                  <button
+                    className="button button-ghost audit-trail-button"
+                    type="button"
+                    disabled={!activeRun}
+                    onClick={() => void toggleLatestAudit()}
+                  >
+                    {auditOpen ? "Hide audit trail" : "View audit trail"}
+                  </button>
+                  <div className="session-info">
+                    <span className="pulse" />
+                    Middleware active
+                  </div>
                 </div>
               </div>
 
-              <SecurityDemoPanel
-                agent={selected}
-                extendedDemo={selected.id === RELEASE_GUARDIAN_ID}
-                onOpenRun={openSecurityRun}
-              />
-
               <div className="messages">
-                {messages.length === 0 && !activeRun ? (
+                {messages.length === 0 && !activeRun && !relationshipDiscovery ? (
                   <div className="welcome">
                     <div className="welcome-orbit">
                       <div>⌁</div>
                     </div>
-                    <h3>What should {selected.name} build?</h3>
+                    <h3>What should {selected.name} do?</h3>
                     <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
+                      Ask in normal language. Requests naming protected resources are routed
+                      through identity, permission, graph impact, history, and the Resource Gateway.
                     </p>
                     <div className="prompt-grid">
                       {starterPrompts.map((item) => (
@@ -673,6 +767,17 @@ export default function App() {
                     </article>
                   ))
                 )}
+                {relationshipDiscovery && (
+                  <article className="relationship-discovery" role="status">
+                    <span className="eyebrow">{relationshipDiscovery.observations.length === 1 ? "New relationship found" : "New relationships found"}</span>
+                    <strong>{relationshipDiscovery.prompt}</strong>
+                    <p>{relationshipDiscovery.explanation} Review {relationshipDiscovery.observations.length === 1 ? "it" : "them"} before confirmed topology can influence risk.</p>
+                    <div className="relationship-discovery-actions">
+                      <button className="button button-primary" type="button" onClick={() => setWorkspaceView("overall")}>Show in network graph</button>
+                      <button className="button button-ghost" type="button" onClick={openRelationshipReview}>Review relationships</button>
+                    </div>
+                  </article>
+                )}
                 {activeRun && ["queued", "running"].includes(activeRun.status) && (
                   <article className="message message-assistant thinking">
                     <div className="message-meta">
@@ -690,12 +795,13 @@ export default function App() {
                     <div className="run-approval-heading">
                       <span aria-hidden="true">!</span>
                       <div>
-                        <strong>This action needs human approval</strong>
+                        <strong>Review before this action continues</strong>
                         <p>
-                          {activeRun.policy.reasonCode === "SUSPICIOUS_REQUEST"
-                            ? activeRun.policy.intentExplanation
-                            : `The reachable systems total ${activeRun.policy.riskScore} risk points, above the review threshold of ${activeRun.policy.reviewThreshold}.`}
-                          {" "}The Agent runtime has not started.
+                          {activeRun.pendingAction
+                            ? `Codex proposed ${activeRun.pendingAction.capability.replace("CAN_", "").toLowerCase()} access to ${activeRun.pendingAction.targetNodeId.replace(/^asset:/, "").replaceAll("-", " ")}. Permission passed, but ${activeRun.policy.intentExplanation.toLowerCase()} No resource has changed.`
+                            : activeRun.policy.reasonCode === "SUSPICIOUS_REQUEST"
+                              ? `${activeRun.policy.intentExplanation} The Agent runtime has not started.`
+                              : `The reachable systems total ${activeRun.policy.riskScore} risk points, above the review threshold of ${activeRun.policy.reviewThreshold}. The Agent runtime has not started.`}
                         </p>
                       </div>
                     </div>
@@ -716,7 +822,7 @@ export default function App() {
                         disabled={busy}
                         onClick={() => void resolveApproval(true)}
                       >
-                        Approve and run
+                        Approve and continue
                       </button>
                       <button
                         type="button"
@@ -729,14 +835,14 @@ export default function App() {
                     </div>
                   </article>
                 )}
-                {activeRun?.status === "failed" && (
+                {activeRun?.status === "failed" && activeRun.kind !== "managed_action" && (
                   <article className={`run-error ${wasSafelyPrevented(activeRun) ? "run-prevented" : ""}`}>
                     <strong>{wasSafelyPrevented(activeRun) ? "Action safely prevented" : "Run failed"}</strong>
                     <span>{activeRun.error}</span>
                     {wasSafelyPrevented(activeRun) && <small>The application is working: middleware ended this Run before a protected effect could occur.</small>}
                   </article>
                 )}
-                <RunTimeline events={runEvents} />
+                {auditOpen && <RunTimeline events={runEvents} />}
                 <div ref={messageEnd} />
               </div>
 
@@ -805,7 +911,7 @@ export default function App() {
                 />
                 <div className="composer-footer">
                   <span>
-                    {analyzingPrompt ? "Understanding request…" : `Enter to send · Shift + Enter for newline · ${system?.codexSandboxMode ?? "checking sandbox"}`}
+                    {analyzingPrompt ? "Resolving action and graph context…" : "Enter to send · Protected resources are checked before effect"}
                   </span>
                   <button
                     className="send-button"
@@ -824,6 +930,19 @@ export default function App() {
                   </button>
                 </div>
               </form>
+              {activityOpen && (activeRun || analyzingPrompt) && (
+                <SecurityDemoPanel
+                  agent={selected}
+                  activeRun={activeRun}
+                  pendingPrompt={activityPrompt}
+                  requestInFlight={analyzingPrompt}
+                  refreshToken={securityRefreshToken}
+                  onClose={() => setActivityOpen(false)}
+                  onOpenRun={openSecurityRun}
+                  onShowImpact={() => setWorkspaceView("graph")}
+                  onShowNetwork={() => setWorkspaceView("overall")}
+                />
+              )}
             </section>}
           </>
         ) : (
@@ -856,7 +975,7 @@ export default function App() {
               <div>
                 <span className="eyebrow">New workspace</span>
                 <h2>Create an Agent</h2>
-                <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
+                <p>Each Agent gets a persistent workspace, a resumable Codex session, and a graph identity. Resource permissions are added separately.</p>
               </div>
               <button type="button" onClick={() => setShowCreate(false)}>×</button>
             </div>

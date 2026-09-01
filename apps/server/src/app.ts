@@ -21,6 +21,7 @@ import type { SecurityStore } from "./security-store.js";
 import type { AuthenticatedPrincipal } from "./security-types.js";
 import type { ControlledActionRuntime } from "./controlled-action-runtime.js";
 import type { SafetyEvidenceService } from "./safety-evidence.js";
+import { extractRelationshipCandidates } from "./knowledge-observation.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -36,6 +37,7 @@ const updateAgentBody = createAgentBody.partial().refine(
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
+const promptRequestBody = messageBody;
 const graphNodeBody = z.object({
   type: z.enum(["human", "asset", "data_category"]),
   label: z.string().trim().min(1).max(120),
@@ -437,11 +439,50 @@ export async function createApp(
           decision.decision.runId,
           body.reason ?? "no reason given",
         );
+      } else if (decision.decision.operationId.startsWith("model-proposed:")) {
+        await service.rejectPendingMediatedAction(
+          decision.decision.runId,
+          body.reason ?? "no reason given",
+        );
       }
       return resolved;
     });
 
     if (securityRuntime && graph) {
+      if (graphConfiguration) {
+        app.post("/api/agents/:id/prompt-requests", async (request) => {
+          const { id } = agentIdParams.parse(request.params);
+          service.getAgent(id);
+          const { content } = promptRequestBody.parse(request.body);
+
+          // Declarative relationship evidence is never executed as an action.
+          // It enters a quarantined observation queue and cannot affect
+          // authority or risk until an administrator confirms it.
+          if (
+            knowledgeObservations &&
+            extractRelationshipCandidates(content, "prompt").length > 0
+          ) {
+            const observations = await knowledgeObservations.observeText({
+              agentId: id,
+              sourceKind: "prompt",
+              text: content,
+            });
+            if (observations.length > 0) {
+              return {
+                kind: "relationship_observation" as const,
+                observations,
+                explanation: `${observations.length} possible ${observations.length === 1 ? "relationship was" : "relationships were"} found in the request. It remains quarantined until a person confirms it.`,
+              };
+            }
+          }
+
+          return {
+            kind: "unhandled" as const,
+            explanation: "The request will continue through the real Codex Agent. If Codex proposes a protected action, the server validates it and routes it through the Resource Gateway.",
+          };
+        });
+      }
+
       app.post("/api/agents/:id/managed-actions", async (request, reply) => {
         const { id } = agentIdParams.parse(request.params);
         service.getAgent(id);

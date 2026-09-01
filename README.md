@@ -4,11 +4,13 @@ A graph- and history-informed enforcement layer for Agent systems, built on the
 Volc Agent Launchpad starter. It provides Agent CRUD, a browser Playground,
 persistent workspaces, and Codex CLI backed by the Volcengine Ark Responses API.
 
-> **Selected hackathon track: Track B — The Bouncer (Identity and
-> Authorization).** The required proof uses two deterministic mock users:
+> **Selected hackathon track: Track B: The Bouncer (Identity and
+> Authorization).** The required proof uses one configured authenticated
+> principal, `human:alice`, plus deterministic Alice/Bob graph-owner fixtures.
 > Alice's Agent reads Alice's managed record through the backend gateway, then
-> the same Agent is denied access to Bob's managed record. The caller cannot
-> change the trusted user in request JSON or headers. The graph-informed,
+> the same Agent is denied access to Bob's managed record. Bob is not a separate
+> authenticated browser session, and caller identity in request JSON or headers
+> cannot replace the configured principal. The graph-informed,
 > history-adaptive safety stop is an integrated extension of that same runtime
 > boundary, not a second selected track.
 
@@ -23,6 +25,140 @@ Volcengine ECS.
 > circuit breaker. It does not provide an external identity provider or
 > transparently mediate arbitrary Codex shell and network actions. Do not use
 > production data or credentials. See [SECURITY.md](SECURITY.md).
+
+## How to run
+
+For the live prompt-driven demo, install Docker Compose and run this from the
+repository root:
+
+```bash
+./scripts/bootstrap-local.sh
+```
+
+Edit the generated, ignored `.env` file and set local values:
+
+```dotenv
+ARK_API_KEY=your-real-ark-api-key
+ARK_MODEL=your-responses-capable-endpoint-id
+APP_AUTH_TOKEN=use-at-least-24-random-characters
+```
+
+Start the stack, wait for `launchpad` to report healthy, and open
+<http://127.0.0.1:3000>. Enter the same `APP_AUTH_TOKEN` in the browser.
+
+```bash
+docker compose up --build -d
+docker compose ps
+```
+
+Stop the stack without deleting persisted demo data:
+
+```bash
+docker compose down
+```
+
+To verify the middleware without Docker, Ark credentials, or a live model, use
+the deterministic browser fixture:
+
+```bash
+npm ci
+npm run check
+npx playwright install chromium
+npm run test:e2e
+```
+
+Keep real credentials only in the ignored `.env`. The fuller live-demo setup
+is in [the presenter script](script.md#start-here-run-docker-compose-before-the-demo),
+with additional local and deployment options later in this README.
+
+## Architecture at a glance
+
+This is the same canonical diagram used in the
+[standalone one-page submission copy](docs/ONE_PAGE_ARCHITECTURE.md).
+
+```mermaid
+flowchart LR
+    subgraph OUTSIDE["UNTRUSTED OR NON-AUTHORITY INPUT"]
+        Human["Human operator"]
+        Browser["React browser<br/>prompt + controls"]
+        Runtime["Codex runtime<br/>read-only sandbox for protected planning"]
+        Ark["Volcengine Ark"]
+        Workspace["Per-Agent workspace"]
+    end
+
+    subgraph CONTROL["TRUSTED APPLICATION AND MIDDLEWARE"]
+        API["Fastify API<br/>authentication + validation"]
+        Runs["AgentService<br/>normal prompt Run lifecycle"]
+        ManagedRun["ControlledActionRuntime + AgentService<br/>create attributable managed-action Run"]
+        E1{{"E1 · whole-Run gate<br/>allow · pause · deny"}}
+        Validate["Validate one model proposal<br/>against current managed catalog"]
+        E2{{"E2 · ResourceGateway<br/>managed-action gate"}}
+        Identity["Server-attested Run identity<br/>origin + Run + Agent + delegation"]
+        Auth{{"Exact authorization<br/>owner + RBAC + direct CAN_*"}}
+        Impact["Backend reverse graph<br/>production impact = 5 resources<br/>includes sensitive customer-data path"]
+        History["Trusted Run baseline<br/>normal staging max = 3<br/>production target is novel"]
+        Risk{{"Graph + history risk<br/>ALLOW · WARN · BLOCK<br/>persistent breaker state"}}
+        Pause["Pause for bound approval<br/>no claim yet"]
+        Claim["Atomic one-time<br/>execution claim"]
+        Prevent["PREVENTED<br/>no execution claim<br/>adapter not called<br/>managed state unchanged"]
+        Events["I · ordered Run timeline<br/>request · identity · authorization<br/>risk · breaker · effect outcome"]
+        Recover["R · controlled recovery<br/>reload/restart evidence<br/>audited breaker reset<br/>exact adapter repeat cannot mutate twice"]
+    end
+
+    subgraph EFFECT["PROVEN EFFECT BOUNDARY: MANAGED SQLITE ONLY"]
+        Adapter["SqliteManagedResourceAdapter<br/>rechecks exact authority,<br/>payload, breaker, and claim"]
+        Managed[("managed_resource_state<br/>+ bound action receipt<br/>one SQLite transaction")]
+    end
+
+    subgraph STATE["DURABLE STATE"]
+        Json[("launchpad.json<br/>Agents · Runs · messages")]
+        DB[("middleware.db<br/>graph · identity · decisions · events<br/>baseline · breaker · claims")]
+    end
+
+    Human --> Browser --> API
+    API -->|"normal prompt: create Run"| Runs --> E1
+    Runs --> Json
+    API -->|"managed route: create managed-action Run"| ManagedRun --> E2
+    ManagedRun --> Json
+    API -->|"existing Run: direct action route"| E2
+    E1 -->|"allow / approved"| Runtime
+    E1 -->|"pause / deny"| Events
+    Runtime <--> Ark
+    Runtime <--> Workspace
+    Runtime -->|"bounded untrusted proposal"| Validate --> E2
+    E2 --> Identity --> Auth
+    Auth -->|"DENY"| Prevent
+    Auth -->|"ALLOW: CAN_WRITE unchanged"| Impact --> History --> Risk
+    Risk -->|"presenter: WARN, deny threshold 80"| Pause
+    Risk -->|"hard-stop: BLOCK at deny threshold 40"| Prevent
+    Pause -->|"approved and still valid"| Claim
+    Pause -->|"rejected / expired"| Prevent
+    Risk -->|"ALLOW"| Claim
+    Claim -->|"valid claim"| Adapter --> Managed
+
+    Identity -. "persist fact" .-> Events
+    Auth -. "persist decision" .-> Events
+    Risk -. "persist factors + transition" .-> Events
+    Adapter -. "completion / failure" .-> Events
+    Prevent --> Events --> DB
+    Identity <--> DB
+    Impact <--> DB
+    History <--> DB
+    Risk <--> DB
+    Claim <--> DB
+    Managed --- DB
+    Json --> Recover
+    DB --> Recover --> API
+
+    classDef enforce fill:#f7e7e3,stroke:#a44437,stroke-width:2px,color:#4f211c;
+    classDef evidence fill:#e9f1fb,stroke:#34679a,stroke-width:2px,color:#183a5c;
+    classDef durable fill:#edf6ee,stroke:#3f7b50,stroke-width:2px,color:#21452b;
+    classDef stopped fill:#fff1cf,stroke:#8a5b00,stroke-width:3px,color:#4d3400;
+    class E1,E2,Auth,Risk,Claim enforce;
+    class Events evidence;
+    class Json,DB,Managed,Recover durable;
+    class Prevent stopped;
+```
 
 ## Screenshots
 
@@ -47,11 +183,12 @@ Volcengine ECS.
 - Expiring, graph-bound approvals with atomic one-time claims
 - Ordered, persistent structured Run-event timelines
 - Server-attested Run identity and scope-preserving Agent delegation
-- Backend-enforced Agent/resource ownership with a two-user authorization proof
+- Backend-enforced Agent/resource ownership with a two-owner authorization proof
 - Reverse graph impact queries used by runtime policy
 - Bounded trusted-history behavioral baselines with poisoning protection
 - A persistent pre-effect circuit breaker for managed resource actions
-- A product-facing Protected Action Center that distinguishes permission,
+- Codex-proposed managed actions: read-only model planning followed by strict
+  server validation and a persistent decision view that separates permission,
   contextual risk, and whether the adapter changed anything
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
@@ -67,59 +204,65 @@ QuantQueens places a backend enforcement seam immediately before managed
 resource access. It binds the human, Agent, Run, capability, graph impact, and
 trusted history into one decision; only an allowed or explicitly approved
 decision receives a single-use execution claim. This deliberately narrow path
-is testable: Alice's permitted read reaches the real managed adapter, while
-Bob's denied read and an unusual production write never do.
+is testable: Alice's permitted read reaches the real managed adapter, Bob's
+denied read never does, and an unusual production write pauses before the
+adapter until a bound approval is consumed.
 
 ## Submission deliverables
 
 | Required deliverable | Repository evidence |
 | --- | --- |
-| Three-minute live demo | [Exact three-minute submission script](script.md#exact-three-minute-submission-demo): create a real Agent, complete Alice's allowed managed read, deny Bob's cross-user read, inspect its persisted timeline, then show an authorized-but-unsafe production action being stopped before effect. |
+| Three-minute live demo | [Part 2: exact three-minute presentation](script.md#part-2-exact-three-minute-presentation): run the Docker Compose stack, show a real Codex/Ark response, complete a normal protected update, deny Bob's cross-owner read, inspect the persisted timeline, pause an authorized but unusual production action for bound approval, and show the impact and network graphs. |
 | One-page architecture diagram | [QuantQueens one-page architecture](docs/ONE_PAGE_ARCHITECTURE.md) shows the data flow, untrusted input and Runtime boundaries, trusted middleware, pre-run and pre-effect enforcement, ordered instrumentation, durable state, and recovery/reconstruction point. |
-| Submission-ready code repository | This README contains [fast setup](#fast-judge-setup-no-model-credential-required), the [problem and rationale](#middleware-problem-and-rationale), [design summary](#how-it-works), [automated validation](#validation), [demo steps](#three-minute-judge-flow), and [limitations](#current-middleware-status-and-next-work). Only `.env.example` is tracked; runtime `.env` files and generated databases are ignored. |
+| Submission-ready code repository | This README contains a [quick start](#how-to-run), the [full judge setup](#official-judge-setup-docker-compose-and-a-real-model), the [problem and rationale](#middleware-problem-and-rationale), [design summary](#how-it-works), [automated tests](#validation), [demo steps](#three-minute-judge-flow), [limitations](#limitations), and [no-secrets guidance](#secrets-and-generated-state). |
 
-The minimum qualifying demonstration is the Alice/Bob path: it contains a real
-backend Run, a real managed SQLite read, an appropriate denial, and persisted
-proof that the denied effect did not happen. Human recovery is useful but is
-not required by the brief's “failure, denial, recovery, degraded, or abuse”
-choice. `REVIEW_REQUIRED` Runs can be approved once; hard authorization denials
-cannot be bypassed.
+The minimum qualifying demonstration sends a normal staging prompt and a
+cross-owner Bob prompt to Release Guardian. Both create real backend Runs. The
+normal action reaches the managed SQLite adapter; the denial has persisted
+proof that no effect happened. Human recovery is useful but is not required by
+the brief's “failure, denial, recovery, degraded, or abuse” choice.
 
 ## Three-minute judge flow
 
-1. Start the development app and click **Create Agent**. Name it **Alice
-   Boundary Judge**, then open **Playground**.
-2. Click **Grant private-record access**. The admin backend creates one exact
-   `CAN_READ` graph capability; Agent creation has already persisted
-   `human:alice -> OWNS -> agent:<new ID>`.
-3. Click **Verify resource boundary**. Alice's managed record completes through
-   the real SQLite adapter with the newly created Agent as actor. The same
-   Agent's attempt against Bob's record returns `DENY`,
-   the adapter is not called, and the Run timeline explains that Bob owns the
-   resource. Supplying `human:bob` in the body or a header does not change the
-   server-attested origin.
-4. Click **Stop** and observe that another protected action returns `409`
-   without a claim or effect. Reload: Agent ownership, permission, status, and
-   Run evidence remain persisted.
-5. Select **Release Guardian**, click **Verify resource boundary**, **Build
-   trusted baseline**, then **Request production update**. The exact write
-   permission is `ALLOW`, but downstream
-   customer-data impact plus historical novelty returns `BLOCK`; the durable
-   configuration remains unchanged.
-6. Open the **audit timeline**, reload, and inspect the same ordered identity,
-   authorization, risk, breaker, and effect evidence.
+1. Follow the Docker Compose startup in `script.md`. Create **Dependency
+   Scout** and prompt `Map these dependencies in two plain sentences: Checkout
+   API -> Fraud Service -> Customer records. Use the verbs calls and
+   processes.` Its completed model response creates quarantined `CALLS` and
+   `PROCESSES` observations plus any missing resource nodes.
+2. Open **Network graph** to inspect the new Agent, resource nodes, Run-backed
+   dashed observations, and pending-review count.
+3. Select **Release Guardian**, open **Playground**, and prompt `Update the
+   staging configuration to release 2.4.1.` The browser
+   submits only natural-language content. Codex plans read-only and proposes a
+   bounded managed action; the server validates it, opens the **Request
+   journey** side rail, and returns **Allowed / Allowed / Completed** after the
+   real write.
+4. Prompt `Read Bob's private records.` Exact ownership and capability
+   enforcement returns **Denied / Not needed / Prevented** before a claim or
+   adapter effect.
+5. Select **View audit trail** and inspect the ordered identity,
+   authorization, resource-attempt, decision, and terminal evidence.
+6. After preparing three trusted staging Runs as documented in `script.md`,
+   prompt `Update the production deployment configuration to release 2.5.0.`
+   Permission remains `ALLOW`, but downstream customer-data impact plus
+   historical novelty returns `WARN`; the durable configuration remains
+   unchanged while the action waits.
+7. Open **Impact map**, focus the Customer dataset path, return to
+   **Playground**, and choose **Approve and continue**. The graph-bound,
+   one-time approval is consumed before the managed configuration changes.
 
 The checked-in browser regression runs this flow with `npm run test:e2e`.
 
-### How to read the Protected Action Center
+### How to read a prompt decision
 
-The center is a guided dependency chain, not four unrelated controls. Follow
-the card marked **Do this now**: grant exact access, verify the Alice/Bob
-identity boundary, build trusted staging history, then test the broader
-production change. Completed prerequisites turn green; locked steps always
-state what must happen first.
-
-The result panel names the exact action and separates three questions:
+**Run activity** opens a right-side rail instead of interrupting the
+conversation. A free-form prompt shows actual Codex Run state. When Codex
+proposes a protected action and backend evidence is recorded, the rail changes
+to **Request journey**, presenting the ordered path through model planning,
+server validation, identity, permission, impact, trusted history, and the
+Resource Gateway. The browser and model do not choose trusted identity, graph
+path, risk, authorization, or verdict. The rail separates three final
+questions:
 
 1. **Permission:** may this Agent access this resource?
 2. **Safety:** is this permitted action acceptable in its current historical
@@ -127,28 +270,36 @@ The result panel names the exact action and separates three questions:
 3. **Resource:** did the protected adapter actually perform the effect?
 
 **Safety stop active** means the persistent circuit breaker is pausing all new
-managed actions. Review the audit timeline before selecting **Reset safety
-stop**. Resetting reopens evaluation; it does not approve the previous request,
+managed actions. Review the audit timeline before selecting **Clear stop and
+re-check**. Clearing reopens evaluation; it does not approve the previous request,
 and the same risky request may be blocked again. A policy-prevented Run is shown
 as **Action safely prevented**, while **Run failed** is reserved for an actual
 execution or application failure.
 
-## Fast judge setup (no model credential required)
+## Official judge setup: Docker Compose and a real model
 
-The selected Track B proof is deterministic and does not call Ark or Codex.
+The official live demo must use the production-style Docker Compose stack and
+valid Ark credentials. Follow **[Start here: run Docker Compose before the
+demo](script.md#start-here-run-docker-compose-before-the-demo)**, then open
+<http://127.0.0.1:3000>. This is the only setup path used by the presenter
+script.
+
 From the repository root:
 
 ```bash
-npm ci
-npm run dev
+./scripts/bootstrap-local.sh
+# Fill only your local .env with ARK_API_KEY, ARK_MODEL, and a 24+ character
+# APP_AUTH_TOKEN, then:
+docker compose up --build
 ```
 
-Open <http://127.0.0.1:5173>, create an Agent, and use **Grant private-record
-access** followed by **Verify resource boundary**. Then select **Release
-Guardian** for the graph/history safety flow. The managed read/write path,
-authorization decisions, graph impact, SQLite effect, timeline, and learning
-loop are all real backend behavior. Model-backed chat remains unavailable
-until Ark is configured.
+Wait for the container to report healthy, open <http://127.0.0.1:3000>, and
+enter the same `APP_AUTH_TOKEN` in the browser unlock screen. Never put a real
+credential in `.env.example`, source code, screenshots, or committed logs.
+
+The middleware path can be tested without a model credential using the
+explicitly labelled deterministic Codex fixture in the Playwright harness.
+That is an automated verification fallback, not the recorded Agent demo:
 
 To run the same proof as an isolated production-build browser test:
 
@@ -159,6 +310,8 @@ npm run test:e2e
 
 ## Current middleware status and next work
 
+### Proven boundary
+
 The repository now contains two complementary enforcement seams:
 
 1. A coarse pre-run graph policy can pause or deny Codex before it starts.
@@ -168,12 +321,19 @@ The repository now contains two complementary enforcement seams:
    an explainable `ALLOW`, `WARN`, or `BLOCK`, and creates a one-time execution
    claim before the managed adapter can run.
 
+For prompts that name a managed Resource, the real Codex turn is narrowed to a
+read-only planner. Codex may propose one catalog Resource and capability, but
+the proposal is untrusted and cannot reach the adapter. Only the server-side
+gateway can resolve identity and authorize, pause, or block the effect.
+
 The selected-track gate is the Alice/Bob backend authorization boundary. The
 central differentiation is deliberately beyond RBAC: after trusted staging
 changes, Release Guardian has direct permission to change the shared deployment
-configuration, but learned novelty plus sensitive downstream graph impact trips
-the safety stop. The adapter remains unclaimed, the resource is unchanged, and
-the ordered evidence survives reload and restart.
+configuration, but history-derived novelty plus sensitive downstream graph
+impact pauses it at `WARN` in the presenter profile. The adapter remains
+unclaimed and the resource stays unchanged until bound approval. The hard-stop
+test profile lowers the deny threshold and proves `BLOCK`, `TRIPPED`, and no
+adapter effect.
 
 Track B's required disable/update control is also enforced outside the UI:
 operators or administrators may stop an Agent, after which protected actions
@@ -181,6 +341,8 @@ return before an execution claim or resource effect; only an administrator may
 delete Agents or change graph permission/ownership facts. Every role check uses
 the current durable principal record, so an earlier process-local role cannot
 outlive a downgrade.
+
+### Limitations
 
 The highest-value remaining work is:
 
@@ -209,9 +371,10 @@ before-state evidence and contain limitations that have since been remediated.
 - Docker, Colima, or Podman for model-backed local Agent turns
 - A Volcengine Ark API key and Responses-capable endpoint for model-backed chat
 
-Neither a container engine nor Ark is required for the guided Track B
-middleware proof. Codex CLI is included in the Runtime image and is not
-required on the host.
+Neither a container engine nor Ark is required for automated middleware tests,
+which use test fixtures. The live prompt-driven judge flow requires Docker
+Compose and valid Ark credentials. Codex CLI is included in the Runtime image
+and is not required on the host.
 
 ## Local browser SOP
 
@@ -327,7 +490,10 @@ Open <http://localhost:3000>. Stop it without deleting Agent data:
 docker compose down
 ```
 
-## Development
+## Local source development (not the judge demo)
+
+This section is for contributors changing code. The recorded demonstration
+uses Docker Compose as documented in `script.md`.
 
 ```bash
 npm install
@@ -386,25 +552,57 @@ cp deploy/volcengine/terraform.tfvars.example \
 
 See [.env.example](.env.example) for all Runtime and resource-limit options.
 
-## How it works
+## Secrets and generated state
 
-```mermaid
-flowchart LR
-    UI["React Web UI"] --> API["Fastify control plane"]
-    API --> Store["JSON: Agents, Runs, and Messages"]
-    API --> Graph["Knowledge Graph APIs and services"]
-    Graph --> Middleware["SQLite middleware.db"]
-    API --> Runtime{"Runtime provider"}
-    Runtime -->|Local POC| Container["Disposable Docker / Colima / Podman container"]
-    Runtime -->|ECS profile| Codex["Codex CLI in application container"]
-    Container --> Ark["Volcengine Ark Responses API"]
-    Codex --> Ark
+The repository ships placeholders, not usable credentials. Put real
+`ARK_API_KEY`, `ARK_MODEL`, and `APP_AUTH_TOKEN` values only in the local
+`.env` created by `./scripts/bootstrap-local.sh`. The tracked
+`.env.example` must remain placeholder-only. `.gitignore` excludes
+`.env`, `.env.production`, SQLite databases and journals, Runtime data,
+Agent workspaces, Codex state, logs, and Terraform state.
+
+Before committing, verify that no local environment or database artifact is
+tracked:
+
+```bash
+git ls-files '.env' '.env.*' '*.db' '*.db-journal' '*.db-shm' '*.db-wal'
+git check-ignore .env data/middleware.db workspaces codex-home
 ```
 
-The first turn uses `codex exec`; later turns resume the stored Codex thread.
-Deleting an Agent archives its workspace under `workspaces/.deleted/` and
-removes its messages, while retaining terminal Run metadata and ordered
-middleware events as queryable audit evidence.
+The first command should print only `.env.example`; the second should confirm
+that every sample runtime path is ignored. Also review staged changes with
+`git diff --cached` and use the hosting platform's secret scanner. Middleware
+stores reject or redact secret-shaped structured metadata as defense in depth,
+but that does not make them credential stores. If a real credential is ever
+committed, revoke and rotate it before rewriting history.
+
+## How it works
+
+See the canonical [architecture at a glance](#architecture-at-a-glance) for
+the complete prompt, direct action, enforcement, persistence, and recovery
+paths.
+
+The design separates three questions in order: who is acting and whether the
+exact action is authorized; whether graph impact and trusted prior Runs make
+that authorized action unusual; and whether the persistent breaker permits an
+effect. The direct `CAN_WRITE` permission stays `ALLOW` in both tested
+profiles. A five-resource production impact and history-derived novelty return
+`WARN` with the presenter profile's `POLICY_DENY_THRESHOLD=80`. The action
+pauses with no claim and no adapter call until its bound approval is consumed.
+The integrated hard-stop profile uses `POLICY_DENY_THRESHOLD=40`; the same
+evidence returns `BLOCK`, moves the breaker to `TRIPPED`, creates no claim,
+never calls the adapter, and leaves managed state unchanged. The difference is
+the configured risk threshold, not a changed RBAC permission.
+
+Required identity, decision, and event persistence failures fail closed before
+the adapter. At effect time the adapter repeats the exact authority,
+delegation, payload, risk, breaker version, and one-time claim checks in the
+same SQLite transaction as the managed read/write and receipt.
+
+The first ordinary turn uses `codex exec`; later turns resume the stored Codex
+thread. Deleting an Agent archives its workspace under
+`workspaces/.deleted/` and removes its messages, while retaining terminal Run
+metadata and ordered middleware events as queryable audit evidence.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component and extension
 boundaries, or use the judge-ready
@@ -519,7 +717,7 @@ The current schema is deliberately split by responsibility:
 | --- | --- |
 | `schema_migrations` | Applied migration versions and immutable checksums |
 | `graph_nodes`, `graph_edges` | `SqliteGraphStore`: identities, assets, permissions, impact, and audit facts |
-| `graph_observations` | Learned resource relationships with confidence, evidence, Run provenance, and review state |
+| `graph_observations` | Observed resource relationships with confidence, evidence, Run provenance, and review state |
 | `policy_decisions` | `SqliteGovernanceStore`: immutable `ALLOW`, `DENY`, or `REVIEW_REQUIRED` evaluations |
 | `approval_requests`, `approval_events` | Pending review state plus append-only approval history |
 | `policy_action_claims` | Atomic, single-use permission to execute an already allowed or approved action |
@@ -613,16 +811,34 @@ those normal lifecycle endpoints.
 
 ## Validation
 
+`npm run check` is the canonical repository gate. The focused middleware
+suite is useful while iterating, and the Playwright test is the browser-level
+judge proof:
+
 ```bash
+npm ci
 npm run check
+npm run test -w @launchpad/server -- \
+  src/model-action-mediator.test.ts \
+  src/integrated-security-runtime.test.ts \
+  src/managed-resource-adapter.test.ts \
+  src/sqlite-run-timeline-store.test.ts
+npx playwright install chromium
 npm run test:e2e
 terraform fmt -check -recursive deploy/volcengine
 docker compose config --quiet
 ```
 
-Install the Chromium test browser once with `npx playwright install chromium`.
-If Terraform is unavailable, report that check as unverified rather than
-silently treating it as passed.
+| Check | Evidence exercised |
+| --- | --- |
+| `npm run check` | Workspace type checks, the complete server Vitest suite, and production builds. |
+| Focused Vitest command | Read-only proposal validation; authorization versus graph/history risk; delegation, breaker, restart, fail-closed, and post-effect-failure paths; exact-claim adapter rechecks; ordered and redacted timeline persistence. |
+| `npm run test:e2e` | Production-build browser flow for a newly created Agent discovering quarantined relationship observations from model output, an allowed managed action, cross-owner denial, persisted audit, graph-informed approval and continuation, and responsive UI. It uses the explicitly labelled deterministic Codex fixture and needs no Ark key. |
+| Compose/Terraform checks | Deployment configuration shape; these do not replace a live container health check. |
+
+Install Chromium once with `npx playwright install chromium`. If Docker or
+Terraform is unavailable, report that check as unverified rather than silently
+treating it as passed.
 
 ## Documentation
 

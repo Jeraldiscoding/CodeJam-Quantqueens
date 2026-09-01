@@ -6,6 +6,9 @@ describe("prompt intent analysis", () => {
     "Explain what the Release Guardian is responsible for",
     "Summarize this Agent's responsibilities",
     "Why is the blast radius 21?",
+    "hi",
+    "Hello!",
+    "Thank you",
   ])("recognizes an informational request: %s", (prompt) => {
     expect(analyzePromptIntent(prompt)).toMatchObject({
       intent: "informational",

@@ -106,8 +106,13 @@ function detailForEdge(edge: GraphEdge): string {
 }
 
 function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: BlastRadius): VisualGraph {
+  const hasConfiguredRelationships = graph.capabilityEdges.length > 0 || graph.impactEdges.length > 0;
+  // Ownership remains part of the backend graph for accountability, but an
+  // otherwise empty Agent map should focus on the Agent rather than imply that
+  // its owner is a resource the Agent can reach.
+  const visibleOwners = hasConfiguredRelationships ? graph.owners : [];
   const nodesById = new Map<string, GraphNode>([[graph.agent.id, graph.agent]]);
-  for (const node of [...graph.owners, ...graph.reachableNodes]) nodesById.set(node.id, node);
+  for (const node of [...visibleOwners, ...graph.reachableNodes]) nodesById.set(node.id, node);
 
   const levelByNodeId = new Map<string, number>([[graph.agent.id, 0]]);
   for (const path of graph.paths) {
@@ -116,7 +121,7 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
       if (current === undefined || index < current) levelByNodeId.set(nodeId, index);
     });
   }
-  for (const owner of graph.owners) levelByNodeId.set(owner.id, -1);
+  for (const owner of visibleOwners) levelByNodeId.set(owner.id, -1);
 
   const maxLevel = Math.max(1, ...[...levelByNodeId.values()].filter((level) => level > 0));
   const nodesByLevel = new Map<number, GraphNode[]>();
@@ -151,7 +156,7 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
       createdAt: observation.createdAt,
       observation,
     })),
-    ...graph.owners.map((owner) => ({
+    ...visibleOwners.map((owner) => ({
       id: `owner:${owner.id}:${graph.agent.id}`,
       sourceId: owner.id,
       targetId: graph.agent.id,
@@ -196,7 +201,7 @@ function buildVisualGraph(agentId: string, graph: AgentGraph, blastRadius: Blast
     score: blastRadius.score,
     threshold: blastRadius.threshold,
     decision: blastRadius.decision,
-    isEmpty: graph.capabilityEdges.length === 0 && graph.impactEdges.length === 0,
+    isEmpty: !hasConfiguredRelationships,
     evidence,
     riskFactors: targets.map(({ node }) => ({
       id: node.id,
@@ -331,7 +336,13 @@ function GraphAccessConfigurator({ agent, onSaved }: { agent: Agent; onSaved: ()
   );
 }
 
-export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
+export function KnowledgeGraphPanel({
+  agent,
+  onShowNetwork,
+}: {
+  agent: Agent;
+  onShowNetwork: () => void;
+}) {
   const [graphData, setGraphData] = useState<{ graph: AgentGraph; blastRadius: BlastRadius; observations: GraphObservation[]; catalog: GraphCatalog } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -379,6 +390,12 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
   const selectedNode = nodesById.get(selectedNodeId) ?? graph?.nodes[0] ?? null;
   const catalogNodesById = useMemo(() => new Map(graphData?.catalog.nodes.map((node) => [node.id, node]) ?? []), [graphData]);
   const reviewObservations = graphData?.observations.filter((observation) => observation.state !== "rejected") ?? [];
+  const pendingObservations = reviewObservations.filter((observation) => observation.state === "observed");
+  const pendingRelationshipSummary = pendingObservations.slice(0, 2).map((observation) => {
+    const source = catalogNodesById.get(observation.sourceNodeId)?.label ?? observation.sourceNodeId;
+    const target = catalogNodesById.get(observation.targetNodeId)?.label ?? observation.targetNodeId;
+    return `${source} ${observation.relation.replaceAll("_", " ")} ${target}`;
+  }).join(" · ");
   const focusedPath = graph?.focusPaths.find((path) => path.targetId === focusedTargetId)
     ?? graph?.focusPaths[0]
     ?? null;
@@ -443,9 +460,23 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
   return (
     <section className="graph-panel" aria-labelledby="impact-map-title">
       <header className="graph-panel-header">
-        <div><span className="eyebrow">Agent impact · Live</span><h2 id="impact-map-title">Impact map</h2><p>{graph.isEmpty ? "This Agent has an accountable identity but no configured resource access yet." : "Trace exact permissions into downstream systems and see the risk used by policy before execution."}</p></div>
+        <div><span className="eyebrow">Agent impact · Live</span><h2 id="impact-map-title">Impact map</h2><p>{graph.isEmpty ? pendingObservations.length > 0 ? `No resource access is configured. ${pendingObservations.length} learned ${pendingObservations.length === 1 ? "relationship is" : "relationships are"} waiting for review.` : "This Agent has an accountable identity but no configured resource access yet." : "Trace exact permissions into downstream systems and see the risk used by policy before execution."}</p></div>
         <div className={`graph-decision graph-decision-${graph.decision.toLowerCase()}`} aria-label={`Blast Radius ${graph.score} out of ${graph.threshold}, ${graph.decision === "REVIEW_REQUIRED" ? "review required" : "allowed"}`}><span>Blast Radius</span><strong>{graph.score} / {graph.threshold}</strong><b>{graph.decision === "REVIEW_REQUIRED" ? "Review required" : "Within threshold"}</b></div>
       </header>
+
+      {graph.isEmpty && pendingObservations.length > 0 && (
+        <section className="graph-pending-notice" role="status" aria-label={`${pendingObservations.length} learned relationships waiting for review`}>
+          <div>
+            <span className="eyebrow">Learning queue · {pendingObservations.length} pending</span>
+            <strong>New topology was learned, but it is not active policy yet.</strong>
+            <p>{pendingRelationshipSummary}. Pending evidence stays quarantined until a person confirms it.</p>
+          </div>
+          <div className="graph-pending-actions">
+            <button className="button button-primary" type="button" onClick={onShowNetwork}>Show pending network</button>
+            <button className="button button-ghost" type="button" onClick={() => document.getElementById("knowledge-review-title")?.scrollIntoView({ behavior: "smooth", block: "start" })}>Review below</button>
+          </div>
+        </section>
+      )}
 
       <div className="graph-toolbar">
         <div className="graph-legend" aria-label="Graph legend"><span><i className="legend-node legend-agent" /> Selected Agent</span>{!graph.isEmpty && <><span><i className="legend-node legend-asset" /> Reachable asset</span><span><i className="legend-line legend-permission" /> Direct permission</span><span><i className="legend-line legend-impact" /> Configured impact</span>{graph.edges.some((edge) => edge.kind === "inference") && <span><i className="legend-line legend-inference-confirmed" /> Confirmed observation</span>}</>}</div>
@@ -479,7 +510,7 @@ export function KnowledgeGraphPanel({ agent }: { agent: Agent }) {
                 };
                 return <g key={node.id} className={`graph-node graph-node-${node.tone} graph-interactive ${active ? "selected" : ""} ${focusedNodeIds.has(node.id) ? "graph-node-focused" : ""}`} role="button" tabIndex={0} aria-label={`Select ${node.label}${hasFocusPath ? " and focus its impact path" : ""}`} aria-pressed={active} onClick={selectNode} onPointerEnter={(event) => placeHover(event, node.label, node.detail)} onPointerLeave={() => setHover(null)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(); } }}><title>{node.label}</title><circle cx={node.x} cy={node.y} r={radius[node.tone]} /><text className="graph-node-label" x={node.x} y={node.y + radius[node.tone] + 20} textAnchor="middle">{node.label}</text></g>;
               })}
-              {graph.isEmpty && <text className="graph-empty-message" x={mapWidth / 2} y={mapHeight / 2 + 105} textAnchor="middle">No relationships configured</text>}
+              {graph.isEmpty && <text className="graph-empty-message" x={mapWidth / 2} y={mapHeight / 2 + 105} textAnchor="middle">{pendingObservations.length > 0 ? "Pending relationships are quarantined from impact" : "No relationships configured"}</text>}
             </g>
           </svg>
         </div>
